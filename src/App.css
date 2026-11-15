@@ -1,0 +1,273 @@
+:root {
+	--border-color: #e5e4e7;
+	--graph-bg: #fafafa;
+	--edge-color: #94a3b8;
+	--selected-stroke: #111827;
+	--tentative-stroke: #2563eb;
+	--tooltip-bg: #111827;
+	--tooltip-text: #f9fafb;
+	--muted-text: #6b7280;
+	--link-color: #2563eb;
+	--warn-bg: #fef3c7;
+	--warn-text: #92400e;
+	--lane-bg-even: rgba(0, 0, 0, 0.02);
+	--lane-bg-odd: rgba(0, 0, 0, 0.045);
+	--lane-bg-main: rgba(56, 189, 248, 0.14);
+
+	--surface: #ffffff;
+	--surface-raised: #ffffff;
+	--text: #1f2328;
+	--accent: #2563eb;
+	--accent-text: #ffffff;
+	--accent-soft: rgba(37, 99, 235, 0.08);
+	--control-bg: #ffffff;
+	--control-border: #d7d7dc;
+	--control-border-hover: #b9b9c2;
+	--control-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+	--focus-ring: rgba(37, 99, 235, 0.35);
+	--hover-bg: rgba(16, 24, 40, 0.035);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--border-color: #2e303a;
+		--graph-bg: #111317;
+		--edge-color: #4b5563;
+		--selected-stroke: #f9fafb;
+		--tentative-stroke: #60a5fa;
+		--tooltip-bg: #f9fafb;
+		--tooltip-text: #111827;
+		--muted-text: #9ca3af;
+		--link-color: #60a5fa;
+		--warn-bg: #451a03;
+		--warn-text: #fde68a;
+		--lane-bg-even: rgba(255, 255, 255, 0.025);
+		--lane-bg-odd: rgba(255, 255, 255, 0.055);
+		--lane-bg-main: rgba(56, 189, 248, 0.16);
+
+		--surface: #16181d;
+		--surface-raised: #1c1f26;
+		--text: #e7e8ea;
+		--accent: #60a5fa;
+		--accent-text: #0b0d10;
+		--accent-soft: rgba(96, 165, 250, 0.14);
+		--control-bg: #1c1f26;
+		--control-border: #34363f;
+		--control-border-hover: #474954;
+		--control-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+		--focus-ring: rgba(96, 165, 250, 0.35);
+		--hover-bg: rgba(255, 255, 255, 0.05);
+	}
+}
+
+body {
+	color-scheme: light dark;
+	background: var(--surface);
+	color: var(--text);
+}
+
+/* --- フォーム共通スタイル（操作バー・検索・一覧ボタン） --- */
+
+.ctl-select,
+.ctl-input {
+	appearance: none;
+	-webkit-appearance: none;
+	font: inherit;
+	color: var(--text);
+	background: var(--control-bg);
+	border: 1px solid var(--control-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+	box-shadow: var(--control-shadow);
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ctl-select {
+	padding-right: 28px;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 8px center;
+	background-size: 12px;
+	cursor: pointer;
+}
+
+.ctl-select:hover,
+.ctl-input:hover {
+	border-color: var(--control-border-hover);
+}
+
+.ctl-select:focus-visible,
+.ctl-input:focus-visible {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.ctl-checkbox-label {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.ctl-checkbox {
+	appearance: none;
+	-webkit-appearance: none;
+	width: 17px;
+	height: 17px;
+	border-radius: 5px;
+	border: 1px solid var(--control-border);
+	background: var(--control-bg);
+	box-shadow: var(--control-shadow);
+	cursor: pointer;
+	display: inline-grid;
+	place-content: center;
+	transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ctl-checkbox::after {
+	content: "";
+	width: 5px;
+	height: 9px;
+	border-right: 2px solid var(--accent-text);
+	border-bottom: 2px solid var(--accent-text);
+	transform: rotate(45deg) scale(0);
+	transition: transform 0.12s ease;
+}
+
+.ctl-checkbox:checked {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+
+.ctl-checkbox:checked::after {
+	transform: rotate(45deg) scale(1);
+}
+
+.ctl-checkbox:hover {
+	border-color: var(--control-border-hover);
+}
+
+.ctl-checkbox:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.btn {
+	font: inherit;
+	color: var(--text);
+	background: var(--control-bg);
+	border: 1px solid var(--control-border);
+	border-radius: 8px;
+	padding: 6px 14px;
+	box-shadow: var(--control-shadow);
+	cursor: pointer;
+	transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+
+.btn:hover {
+	background: var(--hover-bg);
+	border-color: var(--control-border-hover);
+}
+
+.btn:active {
+	transform: translateY(1px);
+}
+
+.btn:focus-visible {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.btn-primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-text);
+}
+
+.btn-primary:hover {
+	filter: brightness(1.08);
+	background: var(--accent);
+	border-color: var(--accent);
+}
+
+.btn-ghost {
+	background: transparent;
+	border-color: transparent;
+	box-shadow: none;
+	color: var(--muted-text);
+	padding: 6px 10px;
+}
+
+.btn-ghost:hover {
+	background: var(--hover-bg);
+	color: var(--text);
+}
+
+.link-btn {
+	background: none;
+	border: none;
+	padding: 0;
+	text-align: left;
+	color: var(--link-color);
+	cursor: pointer;
+	font: inherit;
+	border-radius: 4px;
+}
+
+.link-btn:hover {
+	text-decoration: underline;
+}
+
+.link-btn:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.list-item {
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin: 0 -10px;
+	transition: background 0.12s ease;
+}
+
+.list-item:hover {
+	background: var(--hover-bg);
+}
+
+.search-input-wrap {
+	position: relative;
+}
+
+.search-input-wrap svg {
+	position: absolute;
+	left: 10px;
+	top: 50%;
+	transform: translateY(-50%);
+	pointer-events: none;
+	color: var(--muted-text);
+}
+
+.search-input-wrap .ctl-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding-left: 32px;
+}
+
+/* 分野・年代切り替え時の読み込み中オーバーレイ（2026-11-11）。 */
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.loading-spinner {
+	width: 28px;
+	height: 28px;
+	border: 3px solid var(--border-color);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.7s linear infinite;
+}
