@@ -231,20 +231,33 @@ def verify(db_dir: str, stats_path: str, moves: list[dict]) -> list[str]:
     stats = json.load(open(stats_path))
     totals = {t: 0 for t in TABLES if t != "keywords"}
     conns = {}
-    for db in DB_NAMES:
+    for i, db in enumerate(DB_NAMES, 1):
         start, end = bucket_of(db)
+        size = os.path.getsize(db_path(db_dir, db)) / 1e9
+        log(f"  [{i}/{len(DB_NAMES)}] {db}（{size:.2f} GB）の検証開始")
+        t0 = time.time()
         c = sqlite3.connect(f"file:{db_path(db_dir, db)}?mode=ro", uri=True)
         c.execute("PRAGMA cache_size = -500000")
         conns[db] = c
         for t in totals:
-            totals[t] += c.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+            t1 = time.time()
+            n = c.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+            totals[t] += n
+            log(f"    {t}: {n:,} 行（{time.time() - t1:.0f}s）")
         v = c.execute("SELECT count(*) FROM papers WHERE field = ? AND (year < ? OR year >= ?)",
                       (FIELD, start, end + 1)).fetchone()[0]
+        log(f"    年代外の論文: {v:,}")
         if v:
             errors.append(f"{db}: year_out_of_bucket = {v:,}")
+        t1 = time.time()
+        # quick_check はファイル全体を読むため一番時間がかかる（キャッシュが冷えた EBS では数 MB/s）
+        log(f"    quick_check 開始（ファイル全体を読む。進捗は /proc/{os.getpid()}/io の read_bytes で確認できる）")
         qc = c.execute("PRAGMA quick_check").fetchone()[0]
+        log(f"    quick_check: {qc}（{time.time() - t1:.0f}s）")
         if qc != "ok":
             errors.append(f"{db}: quick_check = {qc}")
+        log(f"  [{i}/{len(DB_NAMES)}] {db} の検証完了（{time.time() - t0:.0f}s）")
+    log("  移動した論文の個別確認")
     # 移動は DB 間の付け替えなので、全 DB 合計は build 時（stats.json）から変わらない
     for t, v in totals.items():
         expected = sum(d[t] for d in stats["dbs"].values())
