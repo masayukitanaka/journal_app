@@ -1,7 +1,8 @@
 # EC2上でのSQLiteデータベース生成手順（CREATE_DB.md）
 
 - ステータス: 2026-11-15 に本番規模で実行し、S3 に保存済み（実行記録は docs/SESSION_CREATE_DB.md）
-- 対象: journal_app に同梱する5つのSQLiteファイル（`field17_2006_2010.sqlite` 〜 `field17_2026_2030.sqlite`）をEC2上で生成する手順
+- 対象: journal_app が使う SQLite ファイル（分野ごとに5つ、`field{分野}_2006_2010.sqlite` 〜 `field{分野}_2026_2030.sqlite`）をEC2上で生成する手順
+- 生成済みの分野: 17 = Computer Science（2026-11-15）、22 = Engineering（2026-11-15 実行中）
 - 必要なスクリプト・データはすべて本リポジトリに含まれる（`scripts/db/`・`data/openalex/manifest.json`）。Cloudflare版リポジトリ `journal` は不要
 
 ---
@@ -10,12 +11,13 @@
 
 | 項目 | 内容 |
 |---|---|
-| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 12.46GB、2026-11-15 実績） |
+| 分野 | OpenAlex の Field ID を `FIELD` で指定（既定 17 = Computer Science、22 = Engineering など）。分野ごとに独立して生成する |
+| 生成するファイル | 分野ごとに5つ。field 17 の例: `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 12.46GB、2026-11-15 実績） |
 | データ元 | OpenAlex S3スナップショット（`s3://openalex/data/parquet/works/`、Parquet形式、CC0、認証不要） |
 | 処理場所 | EC2インスタンス（OpenAlexのS3バケットと同じ`us-east-1`） |
 | 処理の流れ | stage（S3→中間Parquet）→ build（DBごとのテーブルをParquetで出力）→ export_sqlite（SQLiteへ変換して検証） |
 | 実行方法 | `scripts/db/run_create_db.sh` で通しで実行（目安 約1時間10分） |
-| 保存先 | `s3://970173663066-public-us-east-1/journal_app/`（5つの`.sqlite`と`SHA256SUMS`）。アプリはここから取得する（3.6） |
+| 保存先 | `s3://970173663066-public-us-east-1/journal_app/`（全分野の`.sqlite`と、全分野で1つの`SHA256SUMS`）。アプリはここから取得する（3.6） |
 
 ### ファイル構成
 
@@ -26,9 +28,9 @@
 | `scripts/db/build.py` | Step 2: 中間Parquetを結合し、DB（分野×5年）ごとの `papers`/`edges`/`authorships`/`keywords`/`paper_keywords` と `stats.json`（整合性チェック）を出力 |
 | `scripts/db/export_sqlite.py` | Step 3: build の出力をSQLiteファイルへ変換し、`stats.json` と突き合わせて検証 |
 | `scripts/db/fix_misyeared_papers.py` | Step 4: 出版年の誤りで違う年代DBに入った被引用数上位の論文を、OpenAlex APIの値で正しいDBへ移動（4章） |
-| `scripts/db/upload_s3.sh` | Step 5: SQLiteファイルと`SHA256SUMS`をS3へアップロードし、サイズを照合 |
+| `scripts/db/upload_s3.sh` | Step 5: 分野1つ分のSQLiteファイルと`SHA256SUMS`（他分野の行は残して差し替え）をS3へアップロードし、サイズを照合 |
 | `data/openalex/manifest.json` | S3スナップショットのファイル一覧（2026-10-14版、1,898ファイル）。S3の `s3://openalex/data/parquet/works/manifest.json` の複製 |
-| `data/openalex/work/` | 作業フォルダ（git管理外）。stage・out・ログ |
+| `data/openalex/work/field{分野}/` | 作業フォルダ（git管理外）。stage・out・ログ。分野ごとに分ける（stage の抽出条件が違うため）。※ 2026-11-15 の field 17 は `data/openalex/work/` 直下で実行した |
 
 `stage.py`・`build.py` は Cloudflare版（`journal/scripts/ingest/`）からの複製で、処理内容は同一。ただし `build.py` は著者順を保持するよう修正している（3.3）。
 
@@ -134,13 +136,17 @@ cat /tmp/create_db_test/work/create_db.status   # DONE になること
 
 # 本番（全 1,898 ファイル、目安 約1時間10分）。UPLOAD=1 で最後に S3 へのアップロード（3.5）まで行う
 UPLOAD=1 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
-cat data/openalex/work/create_db.status   # RUNNING <step> / DONE / FAILED <step>
-tail -f data/openalex/work/create_db.log
+cat data/openalex/work/field17/create_db.status   # RUNNING <step> / DONE / FAILED <step>
+tail -f data/openalex/work/field17/create_db.log
+
+# 別の分野（例: 22 = Engineering）
+FIELD=22 UPLOAD=1 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
 ```
 
 | 環境変数 | 既定値 | 内容 |
 |---|---|---|
-| `WORK` | `data/openalex/work` | 作業フォルダ（stage・out・ログ） |
+| `FIELD` | `17` | OpenAlex の分野ID（22 = Engineering など） |
+| `WORK` | `data/openalex/work/field{FIELD}` | 作業フォルダ（stage・out・ログ） |
 | `OUT` | `src-tauri/resources/db` | SQLite の出力先 |
 | `MANIFEST` | `data/openalex/manifest.json` | スナップショットのファイル一覧 |
 | `FETCH_MANIFEST` | `0` | `1` なら S3 から最新の manifest を取得して `MANIFEST` を上書きする（5章-5） |
@@ -243,9 +249,13 @@ s3://970173663066-public-us-east-1/journal_app/field17_2011_2015.sqlite
 s3://970173663066-public-us-east-1/journal_app/field17_2016_2020.sqlite
 s3://970173663066-public-us-east-1/journal_app/field17_2021_2025.sqlite
 s3://970173663066-public-us-east-1/journal_app/field17_2026_2030.sqlite
+s3://970173663066-public-us-east-1/journal_app/field22_2006_2010.sqlite  （field 22 も同じ形式）
+...
 s3://970173663066-public-us-east-1/journal_app/SHA256SUMS
 ```
 
+- `upload_s3.sh` は `FIELD` の分野のファイルだけをアップロードする（`FIELD=22 scripts/db/upload_s3.sh`）。
+- `SHA256SUMS` は全分野で1つ。S3上の既存の `SHA256SUMS` を取得して今回の分野の行だけ差し替えるので、他の分野の行は残る。
 - `SHA256SUMS` は `sha256sum` 形式（`<hex>  <ファイル名>`）。マルチパートアップロードのため S3 の ETag は MD5 にならない。アプリ側でダウンロード後の検証に使う。
 - アップロード後、各ファイルのサイズをローカルと `head-object` の `ContentLength` で照合し、不一致なら終了コード1。
 - 既存のファイルは上書きされる。
@@ -257,7 +267,8 @@ s3://970173663066-public-us-east-1/journal_app/SHA256SUMS
 アプリは 3.5 の S3 からファイルを取得して使う（ビルド成果物には同梱しない）。ファイル名は `src-tauri/src/db.rs` の `DB_REGISTRY` の `file_name` と一致させてある。
 
 - 取得URL（バケットが公開読み取りの場合）: `https://970173663066-public-us-east-1.s3.us-east-1.amazonaws.com/journal_app/<ファイル名>`
-- 合計約13GBになるため、取得は中断・再開（HTTP Range）に対応させ、`SHA256SUMS` で検証するのが望ましい。
+- `DB_REGISTRY` には現状 field 17 の5ファイルだけが登録されている。field 22 を使うには `field22_*.sqlite` の5行を追加する。
+- 1分野で十数GB以上になるため、取得は中断・再開（HTTP Range）に対応させ、`SHA256SUMS` で検証するのが望ましい。
 - `src-tauri/resources/db/` は生成時の既定の出力先（`*.sqlite` は git 管理外）。`tauri.conf.json` の `bundle.resources` にこのディレクトリが入っているため、ここに `.sqlite` を置いたままローカルで `npm run tauri build` すると同梱されてしまう点に注意する。
 
 ---

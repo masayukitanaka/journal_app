@@ -3,10 +3,11 @@
 # （docs/CREATE_DB.md 3 章）。UPLOAD=1 なら最後に S3 へのアップロード（upload_s3.sh）も行う。EC2 の終了は含めない。
 #
 # Claude Code や SSH のセッションが切れても止まらないよう、切り離して起動すること:
-#   setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
+#   FIELD=22 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
 #
 # 環境変数:
-#   WORK            作業フォルダ（既定: data/openalex/work）
+#   FIELD           OpenAlex の分野 ID（既定: 17 = Computer Science。22 = Engineering など）
+#   WORK            作業フォルダ（既定: data/openalex/work/field{FIELD}。分野ごとに分ける）
 #   OUT             SQLite の出力先（既定: src-tauri/resources/db）
 #   MANIFEST        S3 スナップショットのファイル一覧（既定: data/openalex/manifest.json）
 #   FETCH_MANIFEST  1 なら S3 から最新の manifest.json を取得して MANIFEST を上書きする（既定: 0。
@@ -23,7 +24,8 @@ set -u
 cd "$(dirname "$0")/../.."
 APP_DIR=$PWD
 SCRIPTS=$APP_DIR/scripts/db
-WORK=${WORK:-$APP_DIR/data/openalex/work}
+FIELD=${FIELD:-17}
+WORK=${WORK:-$APP_DIR/data/openalex/work/field$FIELD}
 OUT=${OUT:-$APP_DIR/src-tauri/resources/db}
 MANIFEST=${MANIFEST:-$APP_DIR/data/openalex/manifest.json}
 FETCH_MANIFEST=${FETCH_MANIFEST:-0}
@@ -57,7 +59,7 @@ run() {
 
 fail() { echo "FAILED $1" > "$STATUS"; log "=== 失敗: $1"; exit 1; }
 
-log "=== 開始 WORK=$WORK OUT=$OUT MANIFEST=$MANIFEST FETCH_MANIFEST=$FETCH_MANIFEST STAGE_ARGS=$STAGE_ARGS"
+log "=== 開始 FIELD=$FIELD WORK=$WORK OUT=$OUT MANIFEST=$MANIFEST FETCH_MANIFEST=$FETCH_MANIFEST STAGE_ARGS=$STAGE_ARGS"
 
 # OpenAlex は S3 スナップショットを週次で更新する。既定ではリポジトリに含めた manifest（再現性優先）を使う
 if [ "$FETCH_MANIFEST" = 1 ] || [ ! -f "$MANIFEST" ]; then
@@ -75,7 +77,7 @@ run "duckdb拡張" python3 -c "import duckdb; c = duckdb.connect(); c.execute('I
 ok=0
 for i in 1 2 3; do
   # shellcheck disable=SC2086
-  if run "stage (試行 $i)" python3 "$SCRIPTS/stage.py" --manifest "$MANIFEST" --work "$WORK" $STAGE_ARGS; then ok=1; break; fi
+  if run "stage (試行 $i)" python3 "$SCRIPTS/stage.py" --manifest "$MANIFEST" --work "$WORK" --field "$FIELD" $STAGE_ARGS; then ok=1; break; fi
   sleep 60
 done
 [ $ok = 1 ] || fail stage
@@ -91,7 +93,7 @@ if [ "$FIX_MISYEARED" = 1 ]; then
 fi
 
 if [ "$UPLOAD" = 1 ]; then
-  run upload_s3 env OUT="$OUT" "$SCRIPTS/upload_s3.sh" || fail upload_s3
+  run upload_s3 env FIELD="$FIELD" OUT="$OUT" "$SCRIPTS/upload_s3.sh" || fail upload_s3
   echo "DONE" > "$STATUS"
   log "=== 全ステップ完了（S3 アップロード済み。EC2 の終了は未実施）"
 else

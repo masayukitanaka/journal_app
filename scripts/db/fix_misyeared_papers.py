@@ -23,6 +23,7 @@ Cloudflare 版リポジトリ journal の scripts/ingest/fix_misyeared_papers.py
   - 再実行しても安全（移動済みの論文は正しい DB にあるため対象にならない）
 
 使い方:
+  分野・DB 一覧は --work の out/stats.json から読む（field 17 以外も同じ手順）。
   python3 scripts/db/fix_misyeared_papers.py --dry-run        # 判定のみ（DB は変更しない）
   python3 scripts/db/fix_misyeared_papers.py                  # 判定して移動し、検証する
   python3 scripts/db/fix_misyeared_papers.py --verify-only    # 検証だけ
@@ -42,18 +43,23 @@ import requests
 
 DEFAULT_WORK = os.path.join(os.path.dirname(__file__), "../../data/openalex/work")
 DEFAULT_DB_DIR = os.path.join(os.path.dirname(__file__), "../../src-tauri/resources/db")
-FIELD = 17
+# 分野・年代区切り・DB 一覧は build.py の stats.json から読む（configure() で設定。分野ごとに作業フォルダが分かれる）
+FIELD = 0
 BUCKET_ANCHOR = 2011
 BUCKET_YEARS = 5
-DB_NAMES = [
-    "field17_2006_2010",
-    "field17_2011_2015",
-    "field17_2016_2020",
-    "field17_2021_2025",
-    "field17_2026_2030",
-]
+DB_NAMES: list[str] = []
 TABLES = ["papers", "edges", "authorships", "keywords", "paper_keywords"]
 BATCH = 50
+
+
+def configure(stats_path: str) -> dict:
+    global FIELD, BUCKET_ANCHOR, BUCKET_YEARS, DB_NAMES
+    stats = json.load(open(stats_path))
+    FIELD = stats["params"]["field"]
+    BUCKET_ANCHOR = stats["params"]["bucket_anchor"]
+    BUCKET_YEARS = stats["params"]["bucket_years"]
+    DB_NAMES = sorted(stats["dbs"])
+    return stats
 
 
 def log(msg: str) -> None:
@@ -280,6 +286,8 @@ def main() -> None:
     args = ap.parse_args()
     stats_path = os.path.join(args.work, "out", "stats.json")
     plan_path = os.path.join(args.work, "fix_misyeared_plan.json")
+    configure(stats_path)
+    log(f"field {FIELD}: 対象 DB {', '.join(DB_NAMES)}")
 
     if args.verify_only:
         plan = json.load(open(plan_path)) if os.path.exists(plan_path) else {"moves": []}

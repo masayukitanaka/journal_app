@@ -133,3 +133,15 @@ f8e3dab56ffc5bef8c327a2acffce4946e9628ce7b1fa9c49de6b92dffe1233a  field17_2016_2
 - アプリ側: S3 からの取得処理（中断・再開と SHA256SUMS による検証）。匿名取得にするならバケットポリシーで `journal_app/*` の `s3:GetObject` を公開する。
 - 出版年の誤りは cit >= 1000 の論文だけ修正済み（cit < 1000 は未検証）。
 - EC2 を終了すると `data/openalex/work/`（ログ・中間データ）と `src-tauri/resources/db/*.sqlite` は消える。SQLite は S3 にあり、中間データは同じ manifest から再生成できる（約 1 時間）。
+
+### 2.6 field 22（Engineering）の生成（2026-11-15 18:01 開始）
+
+- スクリプトを分野指定に対応: `run_create_db.sh` に `FIELD`（既定 17、作業フォルダは `data/openalex/work/field{FIELD}`）、`fix_misyeared_papers.py` は分野・DB 一覧を stats.json から読む、`upload_s3.sh` は `FIELD` の分野だけアップロードし、`SHA256SUMS` は S3 上の他分野の行を残して差し替える。
+- 規模の目安（OpenAlex API、2006〜2026・xpac 除外）: field 22 は 17,881,877 件で、field 17（9,657,318 件）の約 1.85 倍。
+- 小規模データ（S3 最新 2 ファイル）で field 22 の全工程（出版年修正まで）を確認後、本番を起動:
+
+```bash
+FIELD=22 UPLOAD=1 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
+```
+
+（進行に合わせて追記）
