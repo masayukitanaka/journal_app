@@ -144,4 +144,5 @@ f8e3dab56ffc5bef8c327a2acffce4946e9628ce7b1fa9c49de6b92dffe1233a  field17_2016_2
 FIELD=22 UPLOAD=1 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
 ```
 
-（進行に合わせて追記）
+- 結果（18:01〜20:28）: stage 44.4 分（22,217,336 件、失敗 0）→ build 14 分 → export 29 分（5 DB 検証 OK、合計 26.88 GB）→ 出版年修正 52 分（4,745 件確認、2 件移動、ほぼ quick_check の時間）→ S3 アップロード 6 分（サイズ照合 OK、SHA256SUMS は field 17 の行を残して 10 行に）。
+- 数値の詳細・教訓・次回の手順は docs/SESSION_EC2.md にまとめた。

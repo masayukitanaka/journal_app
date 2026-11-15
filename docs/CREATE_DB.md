@@ -2,7 +2,7 @@
 
 - ステータス: 2026-11-15 に本番規模で実行し、S3 に保存済み（実行記録は docs/SESSION_CREATE_DB.md）
 - 対象: journal_app が使う SQLite ファイル（分野ごとに5つ、`field{分野}_2006_2010.sqlite` 〜 `field{分野}_2026_2030.sqlite`）をEC2上で生成する手順
-- 生成済みの分野: 17 = Computer Science（2026-11-15）、22 = Engineering（2026-11-15 実行中）
+- 生成済みの分野: 17 = Computer Science（2026-11-15）、22 = Engineering（2026-11-15）
 - 必要なスクリプト・データはすべて本リポジトリに含まれる（`scripts/db/`・`data/openalex/manifest.json`）。Cloudflare版リポジトリ `journal` は不要
 
 ---
