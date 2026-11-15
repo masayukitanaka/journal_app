@@ -8,3 +8,4 @@
 
 # SQLiteデータファイル（EC2上で生成、ビルド前に手動配置。docs/CREATE_DB.md）
 resources/db/*.sqlite
+resources/db/SHA256SUMS
