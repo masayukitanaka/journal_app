@@ -1,6 +1,6 @@
 # EC2上でのSQLiteデータベース生成手順（CREATE_DB.md）
 
-- ステータス: 小規模データ（S3の最新2ファイル）で全工程を検証済み。本番規模は未実行
+- ステータス: 2026-11-15 に本番規模で実行し、S3 に保存済み（実行記録は docs/SESSION_CREATE_DB.md）
 - 対象: journal_app に同梱する5つのSQLiteファイル（`field17_2006_2010.sqlite` 〜 `field17_2026_2030.sqlite`）をEC2上で生成する手順
 - 必要なスクリプト・データはすべて本リポジトリに含まれる（`scripts/db/`・`data/openalex/manifest.json`）。Cloudflare版リポジトリ `journal` は不要
 
@@ -10,7 +10,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 約13GBの見込み、6章） |
+| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 12.46GB、2026-11-15 実績） |
 | データ元 | OpenAlex S3スナップショット（`s3://openalex/data/parquet/works/`、Parquet形式、CC0、認証不要） |
 | 処理場所 | EC2インスタンス（OpenAlexのS3バケットと同じ`us-east-1`） |
 | 処理の流れ | stage（S3→中間Parquet）→ build（DBごとのテーブルをParquetで出力）→ export_sqlite（SQLiteへ変換して検証） |
@@ -270,7 +270,7 @@ Cloudflare版では本番投入後、2026-10-14 スナップショットで一�
 ## 5. 未確定事項
 
 1. **公開読み取りの設定**: バケット名に public を含むが、`journal_app/` 以下が匿名で取得できるか（バケットポリシー）は未確認。
-2. **本番規模での実行時間**: 2026-11-15 に S3 の最新2ファイル（約2万件）で全工程が通ることを確認済み（5DBとも検証OK、著者順も元データ200件と一致）。全量（`edges` は最大で1DB約3,300万行）での `export_sqlite.py` の所要時間は未計測（1,000万行の実測12.7秒からの単純換算で、edges だけなら合計数分程度の見込み）。
+2. ~~本番規模での実行時間~~: 2026-11-15 に実行（stage 44.6分・build 5分・export 9分・S3 アップロード 約2.5分）。件数は6章と完全一致、合計 12.46GB（docs/SESSION_CREATE_DB.md）。
 3. **WAL・journalモード**: 生成ファイルはデフォルトのjournalモード（DELETE）。アプリは読み取り専用で開くため問題ない想定。
 4. **`VACUUM`の要否**: 主キー順で新規ファイルに投入するため断片化は小さい見込みで、現状は実行していない。配布サイズが6章の参考値より大きく乖離した場合に検討する。
 5. **出版年の誤り**: 4章の修正は未実施。
