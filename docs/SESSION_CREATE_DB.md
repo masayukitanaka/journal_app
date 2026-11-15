@@ -28,3 +28,9 @@ setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
 ```
 
 （進行に合わせて追記）
+
+### 2.3 保存先の追加（2026-11-15 07:40、本番 stage 実行中）
+
+- 生成物は S3 `s3://970173663066-public-us-east-1/journal_app/` に 5 ファイルのまま保存し、アプリがそこから取得する方針になった（1 ファイルへの統合は行わない。`DB_REGISTRY` は変更不要）。
+- `scripts/db/upload_s3.sh`（SHA256SUMS 作成・アップロード・サイズ照合）を追加し、`run_create_db.sh` に `UPLOAD=1` オプションを追加。実行中のパイプラインに影響しないよう、`run_create_db.sh` は新ファイルを作って `mv` で置き換えた（実行中の bash は旧ファイルを読み続ける）。今回の本番実行は旧版で動いているため、アップロードは完了後に `upload_s3.sh` を個別に実行する。
+- この EC2 には AWS 認証情報が無い（`aws sts get-caller-identity` が NoCredentials）。アップロードには書き込み権限のあるインスタンスロールの付与が必要。

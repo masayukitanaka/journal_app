@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # EC2 上で SQLite データベースを生成する一連の処理（stage → build → export_sqlite + 検証）を通しで実行する
-# （docs/CREATE_DB.md 3 章）。S3 へのアップロード・EC2 の終了は含めない（確認のうえ手動で行う）。
+# （docs/CREATE_DB.md 3 章）。UPLOAD=1 なら最後に S3 へのアップロード（upload_s3.sh）も行う。EC2 の終了は含めない。
 #
 # Claude Code や SSH のセッションが切れても止まらないよう、切り離して起動すること:
 #   setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
@@ -12,6 +12,8 @@
 #   FETCH_MANIFEST  1 なら S3 から最新の manifest.json を取得して MANIFEST を上書きする（既定: 0。
 #                   MANIFEST が無い場合は常に取得する）
 #   STAGE_ARGS      stage.py への追加引数（例: "--limit-files 2" で動作確認）
+#   UPLOAD          1 なら検証 OK の後に scripts/db/upload_s3.sh で S3 へアップロードする（既定: 0）
+#   S3_DEST         アップロード先（既定: s3://970173663066-public-us-east-1/journal_app/）
 #
 # ログ:   $WORK/create_db.log（各ステップの出力）
 #         $WORK/create_db_mem.log（30 秒ごとのメモリ・ディスク使用量）
@@ -25,6 +27,7 @@ OUT=${OUT:-$APP_DIR/src-tauri/resources/db}
 MANIFEST=${MANIFEST:-$APP_DIR/data/openalex/manifest.json}
 FETCH_MANIFEST=${FETCH_MANIFEST:-0}
 STAGE_ARGS=${STAGE_ARGS:-}
+UPLOAD=${UPLOAD:-0}
 mkdir -p "$WORK"
 WORK=$(cd "$WORK" && pwd)
 LOG=$WORK/create_db.log
@@ -80,5 +83,11 @@ run build python3 "$SCRIPTS/build.py" --work "$WORK" || fail build
 # export_sqlite.py は stats.json の checks・件数・参照整合性の検証まで行い、NG なら exit 1
 run export_sqlite python3 "$SCRIPTS/export_sqlite.py" --work "$WORK" --out "$OUT" || fail export_sqlite
 
-echo "DONE" > "$STATUS"
-log "=== 全ステップ完了（S3 へのアップロードと EC2 の終了は未実施）"
+if [ "$UPLOAD" = 1 ]; then
+  run upload_s3 env OUT="$OUT" "$SCRIPTS/upload_s3.sh" || fail upload_s3
+  echo "DONE" > "$STATUS"
+  log "=== 全ステップ完了（S3 アップロード済み。EC2 の終了は未実施）"
+else
+  echo "DONE" > "$STATUS"
+  log "=== 全ステップ完了（S3 へのアップロード・EC2 の終了は未実施）"
+fi
