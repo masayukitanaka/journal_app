@@ -1,6 +1,6 @@
 # EC2上でのSQLiteデータベース生成手順（CREATE_DB.md）
 
-- ステータス: 小規模データ（S3の最新2ファイル）で全工程を検証済み。本番規模は未実行
+- ステータス: 2026-11-15 に本番規模で実行し、S3 に保存済み（実行記録は docs/SESSION_CREATE_DB.md）
 - 対象: journal_app に同梱する5つのSQLiteファイル（`field17_2006_2010.sqlite` 〜 `field17_2026_2030.sqlite`）をEC2上で生成する手順
 - 必要なスクリプト・データはすべて本リポジトリに含まれる（`scripts/db/`・`data/openalex/manifest.json`）。Cloudflare版リポジトリ `journal` は不要
 
@@ -10,11 +10,12 @@
 
 | 項目 | 内容 |
 |---|---|
-| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 約13GBの見込み、6章） |
+| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 12.46GB、2026-11-15 実績） |
 | データ元 | OpenAlex S3スナップショット（`s3://openalex/data/parquet/works/`、Parquet形式、CC0、認証不要） |
 | 処理場所 | EC2インスタンス（OpenAlexのS3バケットと同じ`us-east-1`） |
 | 処理の流れ | stage（S3→中間Parquet）→ build（DBごとのテーブルをParquetで出力）→ export_sqlite（SQLiteへ変換して検証） |
 | 実行方法 | `scripts/db/run_create_db.sh` で通しで実行（目安 約1時間10分） |
+| 保存先 | `s3://970173663066-public-us-east-1/journal_app/`（5つの`.sqlite`と`SHA256SUMS`）。アプリはここから取得する（3.6） |
 
 ### ファイル構成
 
@@ -24,6 +25,8 @@
 | `scripts/db/stage.py` | Step 1: S3のParquetを1ファイルずつDuckDB httpfsで直接読み（ダウンロードしない）、分野・出版年で絞った中間Parquetを出力。再開可能 |
 | `scripts/db/build.py` | Step 2: 中間Parquetを結合し、DB（分野×5年）ごとの `papers`/`edges`/`authorships`/`keywords`/`paper_keywords` と `stats.json`（整合性チェック）を出力 |
 | `scripts/db/export_sqlite.py` | Step 3: build の出力をSQLiteファイルへ変換し、`stats.json` と突き合わせて検証 |
+| `scripts/db/fix_misyeared_papers.py` | Step 4: 出版年の誤りで違う年代DBに入った被引用数上位の論文を、OpenAlex APIの値で正しいDBへ移動（4章） |
+| `scripts/db/upload_s3.sh` | Step 5: SQLiteファイルと`SHA256SUMS`をS3へアップロードし、サイズを照合 |
 | `data/openalex/manifest.json` | S3スナップショットのファイル一覧（2026-10-14版、1,898ファイル）。S3の `s3://openalex/data/parquet/works/manifest.json` の複製 |
 | `data/openalex/work/` | 作業フォルダ（git管理外）。stage・out・ログ |
 
@@ -104,6 +107,7 @@ CREATE INDEX idx_paper_keywords_keyword ON paper_keywords(keyword_id);
 | スペック | 2 vCPU・メモリ7.6GB・EBS 500GB で実績あり（Cloudflare版の本番投入時）。2026-11-15 の検証環境は 4 vCPU・15GB・200GB。作業領域は約5GB＋出力約13GBなので、ディスクは50GB以上あれば足りる |
 | OS | Amazon Linux 2023 |
 | 必要ツール | Python 3.9+、`duckdb`（pip、1.4.5で確認）、`sqlite3` CLI（手動確認用）、`aws` CLI、`git` |
+| IAM | 保存先バケット `970173663066-public-us-east-1` の `journal_app/*` への `s3:PutObject`・`s3:GetObject`（head-object 用）権限を持つインスタンスロール（読み取り元の OpenAlex は匿名アクセスなので不要） |
 
 ```bash
 # EC2上
@@ -113,7 +117,7 @@ git clone <journal_app のリポジトリ> && cd journal_app
 ```
 
 - DuckDBの `httpfs`・`sqlite` 拡張は**pipパッケージに同梱されていない**。初回に `INSTALL` でネットワークから取得する必要があるが、`run_create_db.sh` が自動で行う。
-- S3 は `--no-sign-request`（匿名）で読めるため、AWS認証情報は不要（3.5の転送先S3を除く）。
+- OpenAlex の S3 は `--no-sign-request`（匿名）で読めるため、stage〜export に AWS 認証情報は不要。3.5 のアップロードにだけ必要（`aws sts get-caller-identity` で確認できる）。
 
 **注意点**:
 - 長時間処理はセッションから切り離す: `setsid nohup <コマンド> > /dev/null 2>&1 < /dev/null &` で起動し、`*.status`・`*.log` で進捗を確認する（SSH/Claude Codeのセッションが切れても止まらない）。
@@ -128,8 +132,8 @@ cd journal_app
 WORK=/tmp/create_db_test/work OUT=/tmp/create_db_test/db STAGE_ARGS="--limit-files 2" scripts/db/run_create_db.sh
 cat /tmp/create_db_test/work/create_db.status   # DONE になること
 
-# 本番（全 1,898 ファイル、目安 約1時間10分）
-setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
+# 本番（全 1,898 ファイル、目安 約1時間10分）。UPLOAD=1 で最後に S3 へのアップロード（3.5）まで行う
+UPLOAD=1 setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
 cat data/openalex/work/create_db.status   # RUNNING <step> / DONE / FAILED <step>
 tail -f data/openalex/work/create_db.log
 ```
@@ -141,6 +145,9 @@ tail -f data/openalex/work/create_db.log
 | `MANIFEST` | `data/openalex/manifest.json` | スナップショットのファイル一覧 |
 | `FETCH_MANIFEST` | `0` | `1` なら S3 から最新の manifest を取得して `MANIFEST` を上書きする（5章-5） |
 | `STAGE_ARGS` | なし | `stage.py` への追加引数（`--limit-files N`・`--min-year` など） |
+| `FIX_MISYEARED` | `1` | `1` なら export 後に `fix_misyeared_papers.py`（4章）を実行する。OpenAlex API を使う |
+| `UPLOAD` | `0` | `1` なら検証OKの後に `upload_s3.sh` で S3 へアップロードする |
+| `S3_DEST` | `s3://970173663066-public-us-east-1/journal_app/` | アップロード先 |
 
 実行される処理:
 
@@ -149,6 +156,8 @@ tail -f data/openalex/work/create_db.log
 3. `stage.py`（失敗ファイルがあれば最大3回まで再試行。完了済みファイルはスキップ）
 4. `build.py`
 5. `export_sqlite.py`（変換と検証。1つでもNGなら `FAILED export_sqlite`）
+6. （`FIX_MISYEARED=1` の場合）`fix_misyeared_papers.py`（4章。移動後の検証NGなら `FAILED fix_misyeared`）
+7. （`UPLOAD=1` の場合）`upload_s3.sh`
 
 ログは `create_db.log`（各ステップの出力）と `create_db_mem.log`（30秒ごとのメモリ・ディスク使用量）。
 
@@ -182,7 +191,7 @@ python3 scripts/db/build.py
 
 ```bash
 python3 scripts/db/export_sqlite.py
-python3 scripts/db/export_sqlite.py --verify-only   # 変換せず既存ファイルの検証だけ
+python3 scripts/db/export_sqlite.py --verify-only   # 変換せず既存ファイルの検証だけ（4章の修正前のファイルに限る）
 ```
 
 - テーブルは主キーだけで作成し、**データ投入後にセカンダリインデックスを作成**する。主キーを持つテーブル（`papers`・`edges`・`keywords`・`paper_keywords`）は**主キー順にソートして投入**する。1,000万行の `edges` での実測は、インデックスを先に作る方式の58秒に対し12.7秒（約4.5倍）で、ファイルサイズもやや小さい。最後に `ANALYZE`（`analysis_limit=1000`）を実行する。
@@ -218,54 +227,72 @@ EOF
 done
 ```
 
-### 3.5 EC2からの転送
+### 3.5 S3への保存
 
-SQLiteファイルが5つ揃ったら、EC2インスタンスを終了する前にファイルを転送する。
-
-```bash
-# 例: S3経由（EC2 → S3 → ローカルのビルド環境）
-aws s3 cp src-tauri/resources/db/ s3://<バケット名>/journal-app-db/ --recursive --exclude "*" --include "*.sqlite"
-
-# ローカル側で取得
-aws s3 cp s3://<バケット名>/journal-app-db/ ./src-tauri/resources/db/ --recursive
-```
-
-または直接 `scp` でも良い（13GB規模の転送になるため、S3経由の方が中断時の再開がしやすく安定しやすい）。
-
-**この時点でEC2インスタンスを終了する**（課金継続を避けるため）。
-
-### 3.6 Tauriビルドへの組み込み
-
-転送したファイルを `src-tauri/resources/db/` に配置すれば、`tauri.conf.json` の `bundle.resources` 設定により自動的にビルド成果物へ同梱される（`src-tauri/resources/db/README.md` 参照。`*.sqlite` は git 管理外）。
+検証OKの5ファイルを S3 に保存する。`UPLOAD=1` で実行した場合は `run_create_db.sh` が最後に行う。個別に実行する場合は以下。
 
 ```bash
-ls src-tauri/resources/db/
-# field17_2006_2010.sqlite
-# field17_2011_2015.sqlite
-# field17_2016_2020.sqlite
-# field17_2021_2025.sqlite
-# field17_2026_2030.sqlite
-
-npm run tauri build
+scripts/db/upload_s3.sh
 ```
+
+保存先（`S3_DEST`、既定 `s3://970173663066-public-us-east-1/journal_app/`）:
+
+```
+s3://970173663066-public-us-east-1/journal_app/field17_2006_2010.sqlite
+s3://970173663066-public-us-east-1/journal_app/field17_2011_2015.sqlite
+s3://970173663066-public-us-east-1/journal_app/field17_2016_2020.sqlite
+s3://970173663066-public-us-east-1/journal_app/field17_2021_2025.sqlite
+s3://970173663066-public-us-east-1/journal_app/field17_2026_2030.sqlite
+s3://970173663066-public-us-east-1/journal_app/SHA256SUMS
+```
+
+- `SHA256SUMS` は `sha256sum` 形式（`<hex>  <ファイル名>`）。マルチパートアップロードのため S3 の ETag は MD5 にならない。アプリ側でダウンロード後の検証に使う。
+- アップロード後、各ファイルのサイズをローカルと `head-object` の `ContentLength` で照合し、不一致なら終了コード1。
+- 既存のファイルは上書きされる。
+
+**S3への保存を確認したら EC2 インスタンスを終了する**（課金継続を避けるため）。
+
+### 3.6 アプリでの利用
+
+アプリは 3.5 の S3 からファイルを取得して使う（ビルド成果物には同梱しない）。ファイル名は `src-tauri/src/db.rs` の `DB_REGISTRY` の `file_name` と一致させてある。
+
+- 取得URL（バケットが公開読み取りの場合）: `https://970173663066-public-us-east-1.s3.us-east-1.amazonaws.com/journal_app/<ファイル名>`
+- 合計約13GBになるため、取得は中断・再開（HTTP Range）に対応させ、`SHA256SUMS` で検証するのが望ましい。
+- `src-tauri/resources/db/` は生成時の既定の出力先（`*.sqlite` は git 管理外）。`tauri.conf.json` の `bundle.resources` にこのディレクトリが入っているため、ここに `.sqlite` を置いたままローカルで `npm run tauri build` すると同梱されてしまう点に注意する。
 
 ---
 
-## 4. 任意の後処理（データ品質の修正）
+## 4. 出版年の誤りの修正（`fix_misyeared_papers.py`）
 
-Cloudflare版では本番投入後、2026-10-14 スナップショットで一部の著名論文の `publication_year` が誤っていることが見つかった（例: 「Attention Is All You Need」が2025年扱い。OpenAlex側のデータ品質問題で、APIでは修正済み）。そこで、被引用数上位（`cit >= 1000`、計5,011件）をOpenAlex APIで再確認し、21件を正しい年代のDBへ移動した。
+2026-10-14 スナップショットでは、一部の著名論文の `publication_year` が誤っている（例: 「Attention Is All You Need」が2025年扱い。OpenAlex側のデータ品質問題で、APIでは修正済み）。誤った年のせいで違う年代DBに入った論文を、OpenAlex APIの最新値で正しいDBへ移動する。Cloudflare版の `fix_misyeared_papers.py`（D1用）をSQLite用に書き直したもの。
 
-本リポジトリにはこの修正を行うスクリプトは含めていない（Cloudflare版のスクリプトはD1への書き込みが前提のため、SQLite向けには書き直しが必要）。必要になった時点で別途対応する。新しいスナップショットを使う場合は同じ誤りが残っているか未確認なので、まず3.4の検証で明らかな異常（著名論文の出版年が極端にずれている等）が無いかを確認する。
+```bash
+python3 scripts/db/fix_misyeared_papers.py --dry-run      # 判定のみ（data/openalex/work/fix_misyeared_plan.json に保存）
+python3 scripts/db/fix_misyeared_papers.py                # 判定・移動・検証
+python3 scripts/db/fix_misyeared_papers.py --verify-only  # 検証だけ
+```
+
+- **対象**: 各DBの `cit >= 1000`（`--min-cit`、計5,011件）。全1,144万件の再確認は現実的でないため、誤りが偏っていた被引用数上位に絞る。
+- **判定**: OpenAlex APIに50件ずつ問い合わせ、`publication_year` から求めた年代DBが今のDBと違うものを移動対象にする。一括取得で見つからない（OpenAlexがWorkをマージした）IDは `/works/W{id}` のリダイレクトで解決する。
+- **移動**: papers 1行（`year`・`cit` はAPIの最新値に更新）、`edges(citing = id)`、`authorships`（rowid順 = 著者順を保つ）、`paper_keywords`、移動先に無い `keywords`。移動元・移動先のDBを ATTACH し、1論文を1トランザクションで移す。`edges(cited = id)` は citing 側のDBに置く規則なので動かさない（`child_cnt` も変わらない）。
+- **移動しないもの**: 正しい年が対象範囲外（2005年以前など）の論文。
+- **検証**: 全DBで年代外の論文が0、`quick_check` ok、全DB合計の件数が `stats.json` と一致（移動はDB間の付け替えなので合計は不変）、移動した論文が移動先に揃い移動元に残っていないこと。DBごとの件数は変わるため、修正後のファイルに `export_sqlite.py --verify-only` は使えない。
+- **再実行**: 安全（移動済みの論文は正しいDBにあるため対象にならない）。
+- **API利用量**: 約200リクエスト（約$0.01）。APIキー無しの無料枠（$0.10/日）で足りる。環境変数 `OPENALEX_API_KEY` があれば使う。
+- **既知の制約**: `cit < 1000` の論文は未検証。移動した論文だけ `cit` がAPIの最新値になる（他はスナップショット時点の値）。マージされた重複Workは両方が残る（例: 「Attention Is All You Need」は W2626778328 と W4385245566 の2件）。
+
+2026-11-15 の実行結果（24件移動）は docs/SESSION_CREATE_DB.md 2.5 を参照。
 
 ---
 
 ## 5. 未確定事項
 
-1. **本番規模での実行時間**: 2026-11-15 に S3 の最新2ファイル（約2万件）で全工程が通ることを確認済み（5DBとも検証OK、著者順も元データ200件と一致）。全量（`edges` は最大で1DB約3,300万行）での `export_sqlite.py` の所要時間は未計測（1,000万行の実測12.7秒からの単純換算で、edges だけなら合計数分程度の見込み）。
-2. **WAL・journalモード**: 生成ファイルはデフォルトのjournalモード（DELETE）。アプリは読み取り専用で開くため問題ない想定。
-3. **`VACUUM`の要否**: 主キー順で新規ファイルに投入するため断片化は小さい見込みで、現状は実行していない。配布サイズが6章の参考値より大きく乖離した場合に検討する。
-4. **出版年の誤り**: 4章の修正は未実施。
-5. **スナップショットの選定**: 2026-11-15 時点で S3 の最新スナップショットは同梱の `manifest.json` と同じ 2026-10-14（内容も一致を確認済み）。OpenAlex は週次で更新し、古いスナップショットのファイルは S3 から消えていく。そのため、manifest 記載のファイルが無くなった後は `FETCH_MANIFEST=1` で最新の manifest を取得して実行する（件数は6章の参考値と一致しなくなる。取得した manifest はコミットしておくと再現性が保てる）。
+1. **公開読み取りの設定**: バケット名に public を含むが、`journal_app/` 以下が匿名で取得できるか（バケットポリシー）は未確認。
+2. ~~本番規模での実行時間~~: 2026-11-15 に実行（stage 44.6分・build 5分・export 9分・S3 アップロード 約2.5分）。件数は6章と完全一致、合計 12.46GB（docs/SESSION_CREATE_DB.md）。
+3. **WAL・journalモード**: 生成ファイルはデフォルトのjournalモード（DELETE）。アプリは読み取り専用で開くため問題ない想定。
+4. **`VACUUM`の要否**: 主キー順で新規ファイルに投入するため断片化は小さい見込みで、現状は実行していない。配布サイズが6章の参考値より大きく乖離した場合に検討する。
+5. ~~出版年の誤り~~: 2026-11-15 に4章の修正を実施（24件移動）。`cit < 1000` は未検証。
+6. **スナップショットの選定**: 2026-11-15 時点で S3 の最新スナップショットは同梱の `manifest.json` と同じ 2026-10-14（内容も一致を確認済み）。OpenAlex は週次で更新し、古いスナップショットのファイルは S3 から消えていく。そのため、manifest 記載のファイルが無くなった後は `FETCH_MANIFEST=1` で最新の manifest を取得して実行する（件数は6章の参考値と一致しなくなる。取得した manifest はコミットしておくと再現性が保てる）。
 
 ---
 
