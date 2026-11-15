@@ -6,5 +6,5 @@
 # will have schema files for capabilities auto-completion
 /gen/schemas
 
-# SQLiteデータファイル（EC2上で生成、ビルド前に手動配置。docs/native.md 6章）
+# SQLiteデータファイル（EC2上で生成、ビルド前に手動配置。docs/CREATE_DB.md）
 resources/db/*.sqlite
