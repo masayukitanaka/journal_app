@@ -80,8 +80,56 @@ f8e3dab56ffc5bef8c327a2acffce4946e9628ce7b1fa9c49de6b92dffe1233a  field17_2016_2
 
 - 匿名アクセスでの取得は 403（`journal_app/*` は公開読み取りになっていない）。アプリが匿名で取得する場合はバケットポリシーの設定が必要。
 
+### 2.5 出版年の誤りの修正（2026-11-15 17:37〜17:52）
+
+- Cloudflare 版 `fix_misyeared_papers.py`（D1 用）を SQLite 用に書き直して `scripts/db/fix_misyeared_papers.py` を追加し、`run_create_db.sh` に `FIX_MISYEARED`（既定 1）として組み込んだ。修正前のファイルは S3 にあったため、それをバックアップとみなして実行した。
+- 作業前に EC2 が再起動されており（ページキャッシュが空）、最初に書いた全行 NOT EXISTS 結合の検証が 10 分以上終わらなかったため中断し、全体は軽いチェック＋移動した論文の個別確認に変更した。
+- 判定（17:38、OpenAlex API 200 リクエスト、APIキー無し）: 検証 5,011 件 / **移動 24 件** / 正しい年が範囲外 2 件 / API で見つからず 11 件 / マージ済み 99 件。Cloudflare 版（2026-11-11）は 21 件で、その後の API 側の更新で差が出たとみられる。
+- 移動（17:38〜17:39）→ 検証（〜17:49、約 10 分。キャッシュが冷えた状態での count(*) と quick_check）OK → S3 再アップロード（17:51、サイズ照合 OK）。
+- ログ: `data/openalex/work/fix_misyeared.log`、判定結果: `data/openalex/work/fix_misyeared_plan.json`（EC2 とともに消えるため、移動した論文を下に残す）
+
+| ID | タイトル | DB | year | cit |
+|---|---|---|---|---|
+| W2142498761 | Weisfeiler-Lehman Graph Kernels | 2006_2010 → 2011_2015 | 2010.00 → 2011.00 | 1,487 → 1,646 |
+| W9657784 | Evasion attacks against machine learning at test time | 2011_2015 → 2016_2020 | 2013.00 → 2017.00 | 1,535 → 1,857 |
+| W2014515160 | Regression testing minimization, selection and prioritization: a survey | 2011_2015 → 2006_2010 | 2012.08 → 2010.17 | 1,322 → 1,567 |
+| W2248323189 | Media Pendidikan : pengertian, pengembangan, dan pemanfaatannya | 2011_2015 → 2006_2010 | 2014.00 → 2009.00 | 2,010 → 2,014 |
+| W2620629206 | NetVLAD: CNN Architecture for Weakly Supervised Place Recognition | 2011_2015 → 2016_2020 | 2015.83 → 2016.42 | 1,626 → 3,539 |
+| W2807379839 | Modeling a Paradigm Shift: From Producer Innovation to User and Open Collaborative Innovation | 2011_2015 → 2006_2010 | 2011.17 → 2010.00 | 1,150 → 1,382 |
+| W4308909683 | Fully Convolutional Networks for Semantic Segmentation | 2011_2015 → 2016_2020 | 2014.83 → 2016.33 | 2,489 → 15,915 |
+| W2963285578 | Fast and Accurate Deep Network Learning by Exponential Linear Units (ELUs) | 2016_2020 → 2011_2015 | 2018.00 → 2015.83 | 2,761 → 6,285 |
+| W2964161785 | End-to-End Training of Deep Visuomotor Policies | 2016_2020 → 2011_2015 | 2016.00 → 2015.25 | 1,491 → 2,644 |
+| W3099640513 | A correlated topic model of Science | 2016_2020 → 2006_2010 | 2018.00 → 2007.42 | 1,088 → 1,566 |
+| W2626778328 | Attention Is All You Need | 2021_2025 → 2016_2020 | 2025.58 → 2017.42 | 24,487 → 136,431 |
+| W2962862931 | A Unified Approach to Interpreting Model Predictions | 2021_2025 → 2016_2020 | 2024.00 → 2017.33 | 12,586 → 25,423 |
+| W2964015378 | Semi-Supervised Classification with Graph Convolutional Networks | 2021_2025 → 2016_2020 | 2025.00 → 2016.67 | 15,246 → 36,217 |
+| W3047863327 | Machine learning for combinatorial optimization: A methodological tour d’horizon | 2021_2025 → 2016_2020 | 2021.00 → 2020.58 | 1,436 → 1,849 |
+| W3081167590 | Towards Robust Monocular Depth Estimation: Mixing Datasets for Zero-Shot Cross-Dataset Transfer | 2021_2025 → 2016_2020 | 2022.17 → 2020.58 | 1,093 → 2,295 |
+| W3100777112 | 1D convolutional neural networks and applications: A survey | 2021_2025 → 2016_2020 | 2021.00 → 2020.83 | 2,835 → 3,230 |
+| W4287824654 | ELECTRA: Pre-training Text Encoders as Discriminators Rather Than Generators | 2021_2025 → 2016_2020 | 2022.00 → 2020.17 | 1,520 → 3,210 |
+| W4293846201 | Towards Deep Learning Models Resistant to Adversarial Attacks | 2021_2025 → 2016_2020 | 2025.00 → 2017.42 | 4,702 → 11,054 |
+| W4294558607 | Inductive Representation Learning on Large Graphs | 2021_2025 → 2016_2020 | 2024.00 → 2017.42 | 5,183 → 11,713 |
+| W4311415873 | Auto-Encoding Variational Bayes | 2021_2025 → 2011_2015 | 2025.00 → 2013.92 | 2,354 → 38,293 |
+| W4322614756 | Variational Graph Auto-Encoders | 2021_2025 → 2016_2020 | 2025.00 → 2016.83 | 1,543 → 4,442 |
+| W4385245566 | Attention Is All You Need | 2021_2025 → 2016_2020 | 2023.00 → 2017.42 | 76,658 → 136,431 |
+| W4394666973 | Layer Normalization | 2021_2025 → 2016_2020 | 2025.25 → 2016.50 | 1,283 → 12,853 |
+| W2964121744 | Adam: A Method for Stochastic Optimization | 2026_2030 → 2011_2015 | 2026.00 → 2015.33 | 45,780 → 132,822 |
+
+- 範囲外のため移動しなかった論文: W4206196235「Toeplitz and Circulant Matrices: A Review」（正しい年 2005）、W3127686677「TIMIT Acoustic-Phonetic Continuous Speech Corpus」（正しい年 1993）
+- 「Attention Is All You Need」は W2626778328 と W4385245566 の 2 件があり（OpenAlex 側でマージ済みの重複）、どちらも移動して cit は API の値 136,431 になった。
+
+修正後の SHA256SUMS（S3 上のファイルと一致）:
+
+```
+2a061bfa05095eb60f87f7798856892ee21bd2de8cf734431690a0b17db62189  field17_2006_2010.sqlite
+60265a10449b6aec1a2c142bad7048f07ad76a58f42a16073bedd98dd058a148  field17_2011_2015.sqlite
+850b7c7231dd1d88996f98aabdf0871b2488b4dc7246ff384d3be5cc5dc8e093  field17_2016_2020.sqlite
+4d2ce0af8bde85efb674f730f4854731433c6c86c942c321de6bcb2e465b3b66  field17_2021_2025.sqlite
+6b453e37eab1e00e7bb9095a5676a22855c7c3002e34630c9fa22909bf8dec64  field17_2026_2030.sqlite
+```
+
 ## 3. 残作業
 
 - アプリ側: S3 からの取得処理（中断・再開と SHA256SUMS による検証）。匿名取得にするならバケットポリシーで `journal_app/*` の `s3:GetObject` を公開する。
-- 出版年の誤りの修正（CREATE_DB.md 4 章）は未実施。
+- 出版年の誤りは cit >= 1000 の論文だけ修正済み（cit < 1000 は未検証）。
 - EC2 を終了すると `data/openalex/work/`（ログ・中間データ）と `src-tauri/resources/db/*.sqlite` は消える。SQLite は S3 にあり、中間データは同じ manifest から再生成できる（約 1 時間）。

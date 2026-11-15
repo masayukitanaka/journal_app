@@ -25,7 +25,8 @@
 | `scripts/db/stage.py` | Step 1: S3のParquetを1ファイルずつDuckDB httpfsで直接読み（ダウンロードしない）、分野・出版年で絞った中間Parquetを出力。再開可能 |
 | `scripts/db/build.py` | Step 2: 中間Parquetを結合し、DB（分野×5年）ごとの `papers`/`edges`/`authorships`/`keywords`/`paper_keywords` と `stats.json`（整合性チェック）を出力 |
 | `scripts/db/export_sqlite.py` | Step 3: build の出力をSQLiteファイルへ変換し、`stats.json` と突き合わせて検証 |
-| `scripts/db/upload_s3.sh` | Step 4: SQLiteファイルと`SHA256SUMS`をS3へアップロードし、サイズを照合 |
+| `scripts/db/fix_misyeared_papers.py` | Step 4: 出版年の誤りで違う年代DBに入った被引用数上位の論文を、OpenAlex APIの値で正しいDBへ移動（4章） |
+| `scripts/db/upload_s3.sh` | Step 5: SQLiteファイルと`SHA256SUMS`をS3へアップロードし、サイズを照合 |
 | `data/openalex/manifest.json` | S3スナップショットのファイル一覧（2026-10-14版、1,898ファイル）。S3の `s3://openalex/data/parquet/works/manifest.json` の複製 |
 | `data/openalex/work/` | 作業フォルダ（git管理外）。stage・out・ログ |
 
@@ -144,6 +145,7 @@ tail -f data/openalex/work/create_db.log
 | `MANIFEST` | `data/openalex/manifest.json` | スナップショットのファイル一覧 |
 | `FETCH_MANIFEST` | `0` | `1` なら S3 から最新の manifest を取得して `MANIFEST` を上書きする（5章-5） |
 | `STAGE_ARGS` | なし | `stage.py` への追加引数（`--limit-files N`・`--min-year` など） |
+| `FIX_MISYEARED` | `1` | `1` なら export 後に `fix_misyeared_papers.py`（4章）を実行する。OpenAlex API を使う |
 | `UPLOAD` | `0` | `1` なら検証OKの後に `upload_s3.sh` で S3 へアップロードする |
 | `S3_DEST` | `s3://970173663066-public-us-east-1/journal_app/` | アップロード先 |
 
@@ -154,7 +156,8 @@ tail -f data/openalex/work/create_db.log
 3. `stage.py`（失敗ファイルがあれば最大3回まで再試行。完了済みファイルはスキップ）
 4. `build.py`
 5. `export_sqlite.py`（変換と検証。1つでもNGなら `FAILED export_sqlite`）
-6. （`UPLOAD=1` の場合）`upload_s3.sh`
+6. （`FIX_MISYEARED=1` の場合）`fix_misyeared_papers.py`（4章。移動後の検証NGなら `FAILED fix_misyeared`）
+7. （`UPLOAD=1` の場合）`upload_s3.sh`
 
 ログは `create_db.log`（各ステップの出力）と `create_db_mem.log`（30秒ごとのメモリ・ディスク使用量）。
 
@@ -188,7 +191,7 @@ python3 scripts/db/build.py
 
 ```bash
 python3 scripts/db/export_sqlite.py
-python3 scripts/db/export_sqlite.py --verify-only   # 変換せず既存ファイルの検証だけ
+python3 scripts/db/export_sqlite.py --verify-only   # 変換せず既存ファイルの検証だけ（4章の修正前のファイルに限る）
 ```
 
 - テーブルは主キーだけで作成し、**データ投入後にセカンダリインデックスを作成**する。主キーを持つテーブル（`papers`・`edges`・`keywords`・`paper_keywords`）は**主キー順にソートして投入**する。1,000万行の `edges` での実測は、インデックスを先に作る方式の58秒に対し12.7秒（約4.5倍）で、ファイルサイズもやや小さい。最後に `ANALYZE`（`analysis_limit=1000`）を実行する。
@@ -259,11 +262,26 @@ s3://970173663066-public-us-east-1/journal_app/SHA256SUMS
 
 ---
 
-## 4. 任意の後処理（データ品質の修正）
+## 4. 出版年の誤りの修正（`fix_misyeared_papers.py`）
 
-Cloudflare版では本番投入後、2026-10-14 スナップショットで一部の著名論文の `publication_year` が誤っていることが見つかった（例: 「Attention Is All You Need」が2025年扱い。OpenAlex側のデータ品質問題で、APIでは修正済み）。そこで、被引用数上位（`cit >= 1000`、計5,011件）をOpenAlex APIで再確認し、21件を正しい年代のDBへ移動した。
+2026-10-14 スナップショットでは、一部の著名論文の `publication_year` が誤っている（例: 「Attention Is All You Need」が2025年扱い。OpenAlex側のデータ品質問題で、APIでは修正済み）。誤った年のせいで違う年代DBに入った論文を、OpenAlex APIの最新値で正しいDBへ移動する。Cloudflare版の `fix_misyeared_papers.py`（D1用）をSQLite用に書き直したもの。
 
-本リポジトリにはこの修正を行うスクリプトは含めていない（Cloudflare版のスクリプトはD1への書き込みが前提のため、SQLite向けには書き直しが必要）。必要になった時点で別途対応する。新しいスナップショットを使う場合は同じ誤りが残っているか未確認なので、まず3.4の検証で明らかな異常（著名論文の出版年が極端にずれている等）が無いかを確認する。
+```bash
+python3 scripts/db/fix_misyeared_papers.py --dry-run      # 判定のみ（data/openalex/work/fix_misyeared_plan.json に保存）
+python3 scripts/db/fix_misyeared_papers.py                # 判定・移動・検証
+python3 scripts/db/fix_misyeared_papers.py --verify-only  # 検証だけ
+```
+
+- **対象**: 各DBの `cit >= 1000`（`--min-cit`、計5,011件）。全1,144万件の再確認は現実的でないため、誤りが偏っていた被引用数上位に絞る。
+- **判定**: OpenAlex APIに50件ずつ問い合わせ、`publication_year` から求めた年代DBが今のDBと違うものを移動対象にする。一括取得で見つからない（OpenAlexがWorkをマージした）IDは `/works/W{id}` のリダイレクトで解決する。
+- **移動**: papers 1行（`year`・`cit` はAPIの最新値に更新）、`edges(citing = id)`、`authorships`（rowid順 = 著者順を保つ）、`paper_keywords`、移動先に無い `keywords`。移動元・移動先のDBを ATTACH し、1論文を1トランザクションで移す。`edges(cited = id)` は citing 側のDBに置く規則なので動かさない（`child_cnt` も変わらない）。
+- **移動しないもの**: 正しい年が対象範囲外（2005年以前など）の論文。
+- **検証**: 全DBで年代外の論文が0、`quick_check` ok、全DB合計の件数が `stats.json` と一致（移動はDB間の付け替えなので合計は不変）、移動した論文が移動先に揃い移動元に残っていないこと。DBごとの件数は変わるため、修正後のファイルに `export_sqlite.py --verify-only` は使えない。
+- **再実行**: 安全（移動済みの論文は正しいDBにあるため対象にならない）。
+- **API利用量**: 約200リクエスト（約$0.01）。APIキー無しの無料枠（$0.10/日）で足りる。環境変数 `OPENALEX_API_KEY` があれば使う。
+- **既知の制約**: `cit < 1000` の論文は未検証。移動した論文だけ `cit` がAPIの最新値になる（他はスナップショット時点の値）。マージされた重複Workは両方が残る（例: 「Attention Is All You Need」は W2626778328 と W4385245566 の2件）。
+
+2026-11-15 の実行結果（24件移動）は docs/SESSION_CREATE_DB.md 2.5 を参照。
 
 ---
 
@@ -273,7 +291,7 @@ Cloudflare版では本番投入後、2026-10-14 スナップショットで一�
 2. ~~本番規模での実行時間~~: 2026-11-15 に実行（stage 44.6分・build 5分・export 9分・S3 アップロード 約2.5分）。件数は6章と完全一致、合計 12.46GB（docs/SESSION_CREATE_DB.md）。
 3. **WAL・journalモード**: 生成ファイルはデフォルトのjournalモード（DELETE）。アプリは読み取り専用で開くため問題ない想定。
 4. **`VACUUM`の要否**: 主キー順で新規ファイルに投入するため断片化は小さい見込みで、現状は実行していない。配布サイズが6章の参考値より大きく乖離した場合に検討する。
-5. **出版年の誤り**: 4章の修正は未実施。
+5. ~~出版年の誤り~~: 2026-11-15 に4章の修正を実施（24件移動）。`cit < 1000` は未検証。
 6. **スナップショットの選定**: 2026-11-15 時点で S3 の最新スナップショットは同梱の `manifest.json` と同じ 2026-10-14（内容も一致を確認済み）。OpenAlex は週次で更新し、古いスナップショットのファイルは S3 から消えていく。そのため、manifest 記載のファイルが無くなった後は `FETCH_MANIFEST=1` で最新の manifest を取得して実行する（件数は6章の参考値と一致しなくなる。取得した manifest はコミットしておくと再現性が保てる）。
 
 ---
