@@ -23,3 +23,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# SQLite 生成の作業領域（scripts/db、docs/CREATE_DB.md）
+data/openalex/work/

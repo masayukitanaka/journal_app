@@ -1,12 +1,8 @@
 # EC2上でのSQLiteデータベース生成手順（CREATE_DB.md）
 
-- ステータス: ドラフト
-- 対象: journal_app（スタンドアロン版）に同梱する5つのSQLiteファイル（`field17_2006_2010.sqlite` 〜 `field17_2026_2030.sqlite`）をEC2上で生成する手順
-- 前提: [docs/native.md](./native.md) 6章（データ準備の方針）
-- 参照元（Cloudflare版リポジトリ `journal/` の既存ドキュメント・スクリプト）:
-  - [journal/docs/init-ingest.md](../../journal/docs/init-ingest.md) — S3スナップショットからの抽出設計の全体像
-  - [journal/docs/SESSION_EC2.md](../../journal/docs/SESSION_EC2.md) — 実際にEC2で本番データを投入した際の実績・数値
-  - [journal/scripts/ingest/](../../journal/scripts/ingest/) — `stage.py`・`build.py`・`export_sql.py`・`load_d1.py`・`fix_misyeared_papers.py`
+- ステータス: 小規模データ（S3の最新2ファイル）で全工程を検証済み。本番規模は未実行
+- 対象: journal_app に同梱する5つのSQLiteファイル（`field17_2006_2010.sqlite` 〜 `field17_2026_2030.sqlite`）をEC2上で生成する手順
+- 必要なスクリプト・データはすべて本リポジトリに含まれる（`scripts/db/`・`data/openalex/manifest.json`）。Cloudflare版リポジトリ `journal` は不要
 
 ---
 
@@ -14,32 +10,48 @@
 
 | 項目 | 内容 |
 |---|---|
-| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 約13.3GB、`journal`の投入実績ベース） |
-| データ元 | OpenAlex S3スナップショット（`s3://openalex/data/parquet/works/`、Parquet形式、CC0） |
-| 処理場所 | EC2インスタンス（OpenAlexのS3バケットと同じ`us-east-1`推奨） |
-| 既存資産の再利用 | `journal/scripts/ingest/stage.py`・`build.py`はそのまま流用可能。**D1投入用の`export_sql.py`・`load_d1.py`は使わず、代わりにDuckDBの`sqlite`拡張でParquet→SQLiteへ直接変換する**（D1固有の制約が無いぶんシンプルになる、docs/native.md 6.1） |
-| 本書のゴール | `journal/`のEC2作業で確立済みのstage→buildパイプラインを前提に、**D1投入の代わりにSQLiteファイルを直接作る**部分だけを新規に詰める |
+| 生成するファイル | `field17_2006_2010.sqlite` / `field17_2011_2015.sqlite` / `field17_2016_2020.sqlite` / `field17_2021_2025.sqlite` / `field17_2026_2030.sqlite`（合計 約13GBの見込み、6章） |
+| データ元 | OpenAlex S3スナップショット（`s3://openalex/data/parquet/works/`、Parquet形式、CC0、認証不要） |
+| 処理場所 | EC2インスタンス（OpenAlexのS3バケットと同じ`us-east-1`） |
+| 処理の流れ | stage（S3→中間Parquet）→ build（DBごとのテーブルをParquetで出力）→ export_sqlite（SQLiteへ変換して検証） |
+| 実行方法 | `scripts/db/run_create_db.sh` で通しで実行（目安 約1時間10分） |
+
+### ファイル構成
+
+| パス | 内容 |
+|---|---|
+| `scripts/db/run_create_db.sh` | 全工程を通しで実行する。状態・ログを作業フォルダに出力 |
+| `scripts/db/stage.py` | Step 1: S3のParquetを1ファイルずつDuckDB httpfsで直接読み（ダウンロードしない）、分野・出版年で絞った中間Parquetを出力。再開可能 |
+| `scripts/db/build.py` | Step 2: 中間Parquetを結合し、DB（分野×5年）ごとの `papers`/`edges`/`authorships`/`keywords`/`paper_keywords` と `stats.json`（整合性チェック）を出力 |
+| `scripts/db/export_sqlite.py` | Step 3: build の出力をSQLiteファイルへ変換し、`stats.json` と突き合わせて検証 |
+| `data/openalex/manifest.json` | S3スナップショットのファイル一覧（2026-10-14版、1,898ファイル）。S3の `s3://openalex/data/parquet/works/manifest.json` の複製 |
+| `data/openalex/work/` | 作業フォルダ（git管理外）。stage・out・ログ |
+
+`stage.py`・`build.py` は Cloudflare版（`journal/scripts/ingest/`）からの複製で、処理内容は同一。ただし `build.py` は著者順を保持するよう修正している（3.3）。
 
 ---
 
-## 1. 前提: なぜ `journal/` のスクリプトがそのまま使えるのか
+## 1. 処理の考え方
 
-`journal/scripts/ingest/stage.py`（S3→中間Parquet）と`build.py`（中間Parquet→DBごとのテーブル）は、**D1 にもSQLiteにも依存しない中間生成物（Parquetファイル）を作る**工程であり、出力スキーマ（`papers`/`edges`/`authorships`/`keywords`/`paper_keywords`の列構成）はmigrations 0001〜0005と一致させてある。journal_app側のSQLiteスキーマも同じmigrationsをそのまま使う前提（下記2章）なので、**stage.py・build.pyの実行手順はjournal側のドキュメント（init-ingest.md 3.1〜3.3）をそのまま踏襲してよい**。
-
-変わるのは最終段（D1へのSQL投入）だけで、ここをSQLiteファイルへの直接書き込みに置き換える。
+- **ダウンロードしない**: スナップショット全体（works だけで約744GB）は落とさず、DuckDB の httpfs で必要な列だけを S3 から Range 読みする。
+- **抽出条件**: `primary_topic.field.id = 17`（計算機科学）かつ `publication_year` が 2006〜2026。`is_xpac`（2025年以降の拡張収録分。データセット・ソフトウェア等で、被引用・参考文献がほぼ無い）は OpenAlex API の既定と同じく除外する。
+- **DBの区切り**: 2011年を起点に5年ごと（2006-2010, 2011-2015, …, 2026-2030）。論文の所属DBは出版年で決まる。
+- **edges**: 引用する側（citing）の年代のDBに置く。引用される側（cited）は取り込んだ全年代のどこかにあればよく、別DB（過去の年代）にあるエッジも含む。アプリはDBをまたいでエッジを辿る。
+- **child_cnt**: 全年代の edges から数えた直接の子の数（DBをまたぐ子も数える）。
+- **year**: `year + (month-1)/12`（月単位精度）。月が欠損している場合は id から決定的に割り当てる。
 
 ---
 
-## 2. SQLiteスキーマ（migrations相当）
+## 2. SQLiteスキーマ
 
-journal（Cloudflare D1）側の `journal/migrations/0001〜0006` と同一のスキーマを使う。EC2上でSQLiteファイルを新規作成する際は、以下のDDLをそのまま使う。
+Cloudflare版の migrations 0001〜0006 と同一。`scripts/db/export_sqlite.py` がこのスキーマでファイルを作る。
 
 ```sql
 CREATE TABLE papers (
   id        INTEGER PRIMARY KEY,   -- OpenAlexのW番号（数値部分）。分野をまたいで一意
   field     INTEGER NOT NULL,      -- OpenAlex Field ID（計算機科学は17）
   title     TEXT NOT NULL,
-  year      REAL NOT NULL,         -- year + (month-1)/12（月単位精度、migrations/0002）
+  year      REAL NOT NULL,         -- year + (month-1)/12（月単位精度）
   cit       INTEGER NOT NULL,      -- 被引用数
   fwci      REAL,
   subfield  INTEGER,
@@ -48,7 +60,7 @@ CREATE TABLE papers (
 );
 CREATE INDEX idx_papers_field_year ON papers(field, year);
 CREATE INDEX idx_papers_field_cit  ON papers(field, cit DESC);
-CREATE INDEX idx_papers_field_childcnt ON papers(field, child_cnt DESC);  -- migrations/0006
+CREATE INDEX idx_papers_field_childcnt ON papers(field, child_cnt DESC);
 
 CREATE TABLE edges (
   cited   INTEGER NOT NULL,   -- 祖先
@@ -59,7 +71,7 @@ CREATE INDEX idx_edges_citing ON edges(citing);
 
 CREATE TABLE authorships (
   paper_id    INTEGER NOT NULL,
-  author_name TEXT NOT NULL
+  author_name TEXT NOT NULL     -- rowid 順 = 著者順（アプリは ORDER BY rowid で並べる）
 );
 CREATE INDEX idx_authorships_paper ON authorships(paper_id);
 CREATE INDEX idx_authorships_name  ON authorships(author_name);
@@ -78,7 +90,7 @@ CREATE TABLE paper_keywords (
 CREATE INDEX idx_paper_keywords_keyword ON paper_keywords(keyword_id);
 ```
 
-journal_app側（`src-tauri/src/graph.rs`・`paper.rs`・`commands.rs`）はこのスキーマ・列名を前提に実装済みなので、**列名・型を変更しないこと**。変更する場合はRust側の対応するクエリも合わせて直す必要がある。
+アプリ側（`src-tauri/src/graph.rs`・`paper.rs`・`commands.rs`）はこのスキーマ・列名を前提に実装済みなので、**列名・型を変更しないこと**。変更する場合はRust側の対応するクエリと `export_sqlite.py` の `TABLE_DDL`・`INDEX_DDL`・`TABLES` も合わせて直す。
 
 ---
 
@@ -86,170 +98,125 @@ journal_app側（`src-tauri/src/graph.rs`・`paper.rs`・`commands.rs`）はこ�
 
 ### 3.1 EC2インスタンスの準備
 
-`journal/docs/SESSION_EC2.md` 1章・`init-ingest.md` 3.5の実績に準じる。
-
 | 項目 | 推奨 |
 |---|---|
 | リージョン | `us-east-1`（OpenAlexのS3バケットと同一。帯域・転送料の面で有利） |
-| スペック | 実績: 2 vCPU・メモリ7.6GB・EBS 500GB、Amazon Linux 2023（`journal`本番投入時と同条件） |
-| 必要ツール | Python 3.9+、`duckdb`（pip、`sqlite`拡張・`httpfs`拡張は自動同梱） |
+| スペック | 2 vCPU・メモリ7.6GB・EBS 500GB で実績あり（Cloudflare版の本番投入時）。2026-11-15 の検証環境は 4 vCPU・15GB・200GB。作業領域は約5GB＋出力約13GBなので、ディスクは50GB以上あれば足りる |
+| OS | Amazon Linux 2023 |
+| 必要ツール | Python 3.9+、`duckdb`（pip、1.4.5で確認）、`sqlite3` CLI（手動確認用）、`aws` CLI、`git` |
 
 ```bash
 # EC2上
-sudo yum install -y python3 python3-pip   # Amazon Linux の場合
+sudo dnf install -y python3 python3-pip sqlite git
 pip3 install duckdb
+git clone <journal_app のリポジトリ> && cd journal_app
 ```
 
-**注意点（`SESSION_EC2.md`より）**:
+- DuckDBの `httpfs`・`sqlite` 拡張は**pipパッケージに同梱されていない**。初回に `INSTALL` でネットワークから取得する必要があるが、`run_create_db.sh` が自動で行う。
+- S3 は `--no-sign-request`（匿名）で読めるため、AWS認証情報は不要（3.5の転送先S3を除く）。
+
+**注意点**:
 - 長時間処理はセッションから切り離す: `setsid nohup <コマンド> > /dev/null 2>&1 < /dev/null &` で起動し、`*.status`・`*.log` で進捗を確認する（SSH/Claude Codeのセッションが切れても止まらない）。
-- EC2は使い捨て想定。**作業完了後、生成したSQLiteファイルをS3等へアップロードしてから必ずインスタンスを終了する**（課金継続の事故を避ける）。
+- EC2は使い捨て想定。**作業完了後、生成したSQLiteファイルをS3等へ転送してから必ずインスタンスを終了する**（課金継続の事故を避ける）。
 
-### 3.2 stage → build（journalのスクリプトをそのまま実行）
-
-`journal`リポジトリを（またはそのEC2インスタンス上にcloneして）用意し、`scripts/ingest/`をそのまま使う。
+### 3.2 通しで実行する
 
 ```bash
-cd journal
+cd journal_app
 
-# Step 1: S3 → 中間Parquet（init-ingest.md 3.3 Step 1）
-python3 scripts/ingest/stage.py   # 既定 --field 17 --min-year 2006 --max-year 2026、全1,898ファイル
-cat data/openalex/work/pipeline.status   # DONE になるまで待つ（実績: 約62分）
+# 段階①: 動作確認（S3 の最新 2 ファイルだけ、1 分未満）。出力先は本番と分ける
+WORK=/tmp/create_db_test/work OUT=/tmp/create_db_test/db STAGE_ARGS="--limit-files 2" scripts/db/run_create_db.sh
+cat /tmp/create_db_test/work/create_db.status   # DONE になること
 
-# Step 2: 中間Parquet → DBごとのテーブル（init-ingest.md 3.3 Step 2）
-python3 scripts/ingest/build.py   # 出力: data/openalex/work/out/{DB名}/{table}.parquet（実績: 約5分）
+# 本番（全 1,898 ファイル、目安 約1時間10分）
+setsid nohup scripts/db/run_create_db.sh > /dev/null 2>&1 < /dev/null &
+cat data/openalex/work/create_db.status   # RUNNING <step> / DONE / FAILED <step>
+tail -f data/openalex/work/create_db.log
 ```
 
-- 実績（`SESSION_EC2.md` 4.3）: stage 61.9分、build 5分。作業領域 stage 2.4GB / out 2.1GB。
-- `out/stats.json` に整合性チェック（NOT NULL違反、年代外の論文、参照整合性など）が出力される。**全項目が0であることを確認してから次に進む**（3.4参照）。
-- 小規模データでまず動作確認してから本番規模に進む段階実行の方針は `init-ingest.md` 3.0 を踏襲する（`--limit-files`・`--min-year`で範囲を絞って試す）。
+| 環境変数 | 既定値 | 内容 |
+|---|---|---|
+| `WORK` | `data/openalex/work` | 作業フォルダ（stage・out・ログ） |
+| `OUT` | `src-tauri/resources/db` | SQLite の出力先 |
+| `MANIFEST` | `data/openalex/manifest.json` | スナップショットのファイル一覧 |
+| `FETCH_MANIFEST` | `0` | `1` なら S3 から最新の manifest を取得して `MANIFEST` を上書きする（5章-5） |
+| `STAGE_ARGS` | なし | `stage.py` への追加引数（`--limit-files N`・`--min-year` など） |
 
-### 3.3 build出力 → SQLiteファイル（D1投入の代わり、新規手順）
+実行される処理:
 
-`journal`では、ここから`export_sql.py`（SQL文生成）→`load_d1.py`（`wrangler d1 execute`でD1投入・検証）という2段階を踏んでいたが、journal_appではD1を経由しないため、**DuckDBの`sqlite`拡張でParquetを直接SQLiteファイルへコピーする**。これにより中間SQLファイル生成・wrangler経由の投入・D1のレート制限対策（リトライ、チャンク分割）がすべて不要になる。
+1. （`FETCH_MANIFEST=1` または manifest が無い場合）S3 から manifest を取得
+2. DuckDB 拡張（httpfs・sqlite）のインストール
+3. `stage.py`（失敗ファイルがあれば最大3回まで再試行。完了済みファイルはスキップ）
+4. `build.py`
+5. `export_sqlite.py`（変換と検証。1つでもNGなら `FAILED export_sqlite`）
 
-DuckDBの`sqlite`拡張は、SQLite用の`ATTACH`と`COPY`で直接テーブルを書き込める（参考: https://duckdb.org/docs/extensions/sqlite）。
+ログは `create_db.log`（各ステップの出力）と `create_db_mem.log`（30秒ごとのメモリ・ディスク使用量）。
 
-`scripts/export_sqlite.py`として新規スクリプトを用意する想定（journal_appリポジトリ側に追加する、またはこのまま手元のワンショットスクリプトとして実行する）。
+### 3.3 各ステップの詳細（個別に実行する場合）
 
-```python
-#!/usr/bin/env python3
-"""build.py の出力（out/{DB名}/{table}.parquet）を SQLite ファイルへ直接変換する。
-D1 の制約（バインド変数100件上限、SQL文長上限、レート制限）が無いため、
-export_sql.py・load_d1.py を経由せずそのまま COPY できる。
+各スクリプトの既定のパスは `data/openalex/` 以下・`src-tauri/resources/db` なので、リポジトリのルートから引数なしで実行できる。
 
-使い方:
-  python3 export_sqlite.py --work /path/to/journal/data/openalex/work --out /path/to/journal_app/src-tauri/resources/db
-"""
-import argparse
-import os
-import duckdb
-
-SCHEMA_SQL = """
-CREATE TABLE papers (
-  id INTEGER PRIMARY KEY, field INTEGER NOT NULL, title TEXT NOT NULL,
-  year REAL NOT NULL, cit INTEGER NOT NULL, fwci REAL, subfield INTEGER,
-  child_cnt INTEGER NOT NULL DEFAULT 0, doi TEXT
-);
-CREATE INDEX idx_papers_field_year ON papers(field, year);
-CREATE INDEX idx_papers_field_cit ON papers(field, cit DESC);
-CREATE INDEX idx_papers_field_childcnt ON papers(field, child_cnt DESC);
-
-CREATE TABLE edges (
-  cited INTEGER NOT NULL, citing INTEGER NOT NULL, PRIMARY KEY (cited, citing)
-) WITHOUT ROWID;
-CREATE INDEX idx_edges_citing ON edges(citing);
-
-CREATE TABLE authorships (paper_id INTEGER NOT NULL, author_name TEXT NOT NULL);
-CREATE INDEX idx_authorships_paper ON authorships(paper_id);
-CREATE INDEX idx_authorships_name ON authorships(author_name);
-
-CREATE TABLE keywords (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-
-CREATE TABLE paper_keywords (
-  paper_id INTEGER NOT NULL, keyword_id TEXT NOT NULL, score REAL,
-  PRIMARY KEY (paper_id, keyword_id)
-) WITHOUT ROWID;
-CREATE INDEX idx_paper_keywords_keyword ON paper_keywords(keyword_id);
-"""
-
-TABLES = ["papers", "edges", "authorships", "keywords", "paper_keywords"]
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--work", required=True, help="journal の data/openalex/work ディレクトリ")
-    ap.add_argument("--out", required=True, help="出力先ディレクトリ（journal_app の resources/db）")
-    args = ap.parse_args()
-
-    out_root = os.path.join(args.work, "out")
-    os.makedirs(args.out, exist_ok=True)
-
-    con = duckdb.connect()
-    con.execute("INSTALL sqlite; LOAD sqlite;")
-
-    for db_name in sorted(d for d in os.listdir(out_root) if os.path.isdir(os.path.join(out_root, d))):
-        sqlite_path = os.path.join(args.out, f"{db_name}.sqlite")
-        if os.path.exists(sqlite_path):
-            os.remove(sqlite_path)
-
-        # 空の SQLite ファイルをスキーマ付きで作成してから ATTACH する
-        import sqlite3
-        raw = sqlite3.connect(sqlite_path)
-        raw.executescript(SCHEMA_SQL)
-        raw.commit()
-        raw.close()
-
-        con.execute(f"ATTACH '{sqlite_path}' AS sq (TYPE sqlite)")
-        for table in TABLES:
-            parquet = os.path.join(out_root, db_name, f"{table}.parquet")
-            print(f"{db_name}: {table} を投入中...", flush=True)
-            con.execute(f"INSERT INTO sq.{table} SELECT * FROM read_parquet('{parquet}')")
-        con.execute("DETACH sq")
-        print(f"{db_name}: 完了 → {sqlite_path}", flush=True)
-
-    con.close()
-
-
-if __name__ == "__main__":
-    main()
-```
+**Step 1: stage**（実績 約62分、作業領域 約2.4GB）
 
 ```bash
-# EC2上で実行
-python3 export_sqlite.py \
-  --work journal/data/openalex/work \
-  --out  journal_app/src-tauri/resources/db
+python3 scripts/db/stage.py                  # 既定 --field 17 --min-year 2006 --max-year 2026、全1,898ファイル
+python3 scripts/db/stage.py --limit-files 2  # 動作確認（更新日の新しい側から N ファイル）
 ```
 
-- `build.py`の出力列はmigrationsのスキーマ（`papers`: id, field, title, year, cit, fwci, subfield, child_cnt, doi の順）と一致しているため、`SELECT * FROM read_parquet(...)` の列順がそのまま対応する。**列の順序がずれていないか最初の1DBで必ず確認すること**（`sqlite3 <file>.sqlite ".schema papers"` と `PRAGMA table_info(papers);` で確認）。
-- `INSERT INTO sq.{table} SELECT * FROM read_parquet(...)` は1トランザクションでまとめて書き込まれる。D1投入時のような「1文90KB・1ファイル100MB」というチャンク制約は不要（SQLiteのINSERTにそのような上限は無い）。
-- 投入順序（papers→edges→authorships→keywords→paper_keywords）はTABLESのリスト順で担保しているが、SQLiteには外部キー制約を設定していないため厳密な順序依存は無い（念のため元の順序を踏襲）。
+- 出力: `data/openalex/work/stage/{updated_date}__{part}.parquet`（入力1ファイルにつき1つ。該当0件でも空ファイルを書く）
+- 抽出条件を `stage_params.json` に記録し、既存の stage と条件が違う場合は停止する（やり直す場合は `stage/` を削除）。
+- 接続ごとのメモリ上限 `--memory-limit 1GB` × 並列 `--jobs 4`。7.6GBのマシンで OOM しないよう調整済み。
+
+**Step 2: build**（実績 約5分、出力 約2.1GB）
+
+```bash
+python3 scripts/db/build.py
+```
+
+- 出力: `data/openalex/work/out/{DB名}/{table}.parquet`、`out/stats.json`
+- 実行のたびに `out/` を作り直す。中間計算は `build.duckdb`（ディスク上）で行い、溢れた分は `tmp/` にスピルする。
+- `stats.json` の `dbs.{DB名}.checks`（NOT NULL違反、年代外の論文、DB内にciting論文が無いエッジ、辞書に無いkeyword_id）と `child_cnt_sum_minus_edges` がすべて0であることを Step 3 が検証する。
+- **Cloudflare版からの変更点**: `authorships` に著者順 `pos`（OpenAlex上の順、1始まり。同名の重複は最初の位置）を出力する。Cloudflare版は `list_distinct` で重複除去していたため著者順が保たれていなかった。
+
+**Step 3: export_sqlite**（本番規模は未計測、5章-1）
+
+```bash
+python3 scripts/db/export_sqlite.py
+python3 scripts/db/export_sqlite.py --verify-only   # 変換せず既存ファイルの検証だけ
+```
+
+- テーブルは主キーだけで作成し、**データ投入後にセカンダリインデックスを作成**する。主キーを持つテーブル（`papers`・`edges`・`keywords`・`paper_keywords`）は**主キー順にソートして投入**する。1,000万行の `edges` での実測は、インデックスを先に作る方式の58秒に対し12.7秒（約4.5倍）で、ファイルサイズもやや小さい。最後に `ANALYZE`（`analysis_limit=1000`）を実行する。
+- `authorships` は `(paper_id, pos)` 順に投入し、rowid 順 = 著者順にする（`pos` 自体はSQLiteに入れない）。
+- 投入列は名前で明示しているため、build の出力列順に依存しない。
+- 書き込み中は `{DB名}.sqlite.tmp` に書き、完了後に rename する（途中で止まっても不完全なファイルが残らない）。
+- `stats.json` の `dbs` に含まれる DB だけを変換する。
 
 ### 3.4 検証
 
-`journal`の`load_d1.py`が行っていた検証（`init-ingest.md` 3.6）を、SQLite版として実施する。
+`export_sqlite.py` が変換直後に以下を自動で検証し、1つでもNGなら終了コード1で止まる（sqlite3 CLI 不要）。
+
+- 5テーブルの件数が `out/stats.json` の `dbs.{DB名}` の値と一致すること
+- `paper_keywords.keyword_id` が `keywords` にすべて存在すること（スキーマには外部キー制約を付けていないため明示的に確認）
+- `stats.json` の `checks` がすべて0
+- `PRAGMA quick_check` が `ok`
+
+あわせて、件数・ファイルサイズが6章の参考値と大きく乖離していないか目視で確認する。手動で確認する場合は以下。
 
 ```bash
 for db in field17_2006_2010 field17_2011_2015 field17_2016_2020 field17_2021_2025 field17_2026_2030; do
   echo "=== $db ==="
-  sqlite3 "journal_app/src-tauri/resources/db/$db.sqlite" <<'EOF'
+  sqlite3 "src-tauri/resources/db/$db.sqlite" <<'EOF'
 SELECT 'papers', COUNT(*) FROM papers;
 SELECT 'edges', COUNT(*) FROM edges;
 SELECT 'authorships', COUNT(*) FROM authorships;
 SELECT 'keywords', COUNT(*) FROM keywords;
 SELECT 'paper_keywords', COUNT(*) FROM paper_keywords;
--- child_cnt の合計とedges件数の整合性（build.py の stats.json の値と突き合わせる）
 SELECT 'child_cnt_sum', SUM(child_cnt) FROM papers;
--- 参照整合性: paper_keywords.keyword_id が keywords.id に存在するか
 SELECT 'dangling_paper_keywords', COUNT(*) FROM paper_keywords pk
   LEFT JOIN keywords k ON k.id = pk.keyword_id WHERE k.id IS NULL;
 EOF
 done
 ```
-
-- `out/stats.json`（build.py出力）の`dbs.{DB名}.papers`・`edges`等の件数と、上記`SELECT COUNT(*)`の値が一致することを確認する。
-- `dangling_paper_keywords`が0であることを確認する（D1と違いSQLiteは外部キー制約を有効化できるが、`journal`のスキーマは意図的に外部キー制約を付けていないため、ここでの明示的な検証が必要）。
-- ファイルサイズも`SESSION_EC2.md`の実績（4.4、4.5）と大きく乖離していないか確認する（目安: 5DB合計で約13.3GB。D1のインデックス込みサイズとほぼ一致する見込み）。
 
 ### 3.5 EC2からの転送
 
@@ -257,29 +224,28 @@ SQLiteファイルが5つ揃ったら、EC2インスタンスを終了する前�
 
 ```bash
 # 例: S3経由（EC2 → S3 → ローカルのビルド環境）
-aws s3 cp journal_app/src-tauri/resources/db/ s3://<バケット名>/journal-app-db/ --recursive
+aws s3 cp src-tauri/resources/db/ s3://<バケット名>/journal-app-db/ --recursive --exclude "*" --include "*.sqlite"
 
 # ローカル側で取得
-aws s3 cp s3://<バケット名>/journal-app-db/ ./journal_app/src-tauri/resources/db/ --recursive
+aws s3 cp s3://<バケット名>/journal-app-db/ ./src-tauri/resources/db/ --recursive
 ```
 
-または直接`scp`でも良い（13GB規模の転送になるため、S3経由の方が中断時の再開がしやすく安定しやすい）。
+または直接 `scp` でも良い（13GB規模の転送になるため、S3経由の方が中断時の再開がしやすく安定しやすい）。
 
-**この時点でEC2インスタンスを終了する**（`docs/native.md` 6.1、`SESSION_EC2.md`と同様、課金継続を避けるため）。
+**この時点でEC2インスタンスを終了する**（課金継続を避けるため）。
 
 ### 3.6 Tauriビルドへの組み込み
 
-転送したファイルを`journal_app/src-tauri/resources/db/`に配置すれば、`tauri.conf.json`の`bundle.resources`設定により自動的にビルド成果物へ同梱される（`docs/native.md` 6.2、既存の`src-tauri/resources/db/README.md`参照）。
+転送したファイルを `src-tauri/resources/db/` に配置すれば、`tauri.conf.json` の `bundle.resources` 設定により自動的にビルド成果物へ同梱される（`src-tauri/resources/db/README.md` 参照。`*.sqlite` は git 管理外）。
 
 ```bash
-ls journal_app/src-tauri/resources/db/
+ls src-tauri/resources/db/
 # field17_2006_2010.sqlite
 # field17_2011_2015.sqlite
 # field17_2016_2020.sqlite
 # field17_2021_2025.sqlite
 # field17_2026_2030.sqlite
 
-cd journal_app
 npm run tauri build
 ```
 
@@ -287,16 +253,34 @@ npm run tauri build
 
 ## 4. 任意の後処理（データ品質の修正）
 
-`journal`では本番投入後に出版年の誤り（OpenAlex S3スナップショット側のデータ品質問題、`SESSION_EC2.md` 5.2）が見つかり、`scripts/ingest/fix_misyeared_papers.py`で被引用数上位（`cit >= 1000`）の論文をOpenAlex APIで再検証・DB間移動する対応を行った。
+Cloudflare版では本番投入後、2026-10-14 スナップショットで一部の著名論文の `publication_year` が誤っていることが見つかった（例: 「Attention Is All You Need」が2025年扱い。OpenAlex側のデータ品質問題で、APIでは修正済み）。そこで、被引用数上位（`cit >= 1000`、計5,011件）をOpenAlex APIで再確認し、21件を正しい年代のDBへ移動した。
 
-journal_app向けに同じ修正を行う場合、このスクリプトはD1（`wrangler d1 execute`）への書き込みを前提にしているため、SQLite直接操作用に書き換えが必要になる（本書の範囲外、必要になった時点で別途対応する）。**最新のOpenAlex S3スナップショットを使う場合、同じ誤りが残っているかは未確認**なので、まず3.4の検証で明らかな異常（著名論文の出版年が極端にずれている等）が無いか確認し、問題が見つかった場合にのみ対応を検討する。
+本リポジトリにはこの修正を行うスクリプトは含めていない（Cloudflare版のスクリプトはD1への書き込みが前提のため、SQLite向けには書き直しが必要）。必要になった時点で別途対応する。新しいスナップショットを使う場合は同じ誤りが残っているか未確認なので、まず3.4の検証で明らかな異常（著名論文の出版年が極端にずれている等）が無いかを確認する。
 
 ---
 
 ## 5. 未確定事項
 
-1. **`export_sqlite.py`の実機未検証**: 本書のスクリプトはDuckDBの`sqlite`拡張のAPI仕様に基づいて設計したが、実際にEC2上で実行して動作確認はまだ行っていない。特に大規模テーブル（`edges`が最大7,000万行規模）の`INSERT INTO sq.{table} SELECT ...`がメモリ・時間の面でどの程度かかるかは未計測。
-2. **DuckDBの`sqlite`拡張のバージョン互換性**: `journal`のEC2実績はduckdb 1.4.5（pip）。`sqlite`拡張が同バージョンで問題なく使えるかは未確認（`INSTALL sqlite`でネットワーク取得が必要な場合、EC2のネットワーク設定次第で失敗する可能性がある）。
-3. **WAL・journalモードの扱い**: 生成したSQLiteファイルはデフォルトのjournalモード（DELETE）になる想定。配布用の読み取り専用ファイルとしては問題ないはずだが、ファイルサイズ・生成時間に影響する可能性があるため、`PRAGMA journal_mode`の明示設定を検討してもよい。
-4. **`VACUUM`の要否**: DuckDB経由でのバルクINSERT後、SQLiteファイルの断片化・余剰領域が発生するか未確認。配布サイズを最小化したい場合は生成の最後に`VACUUM`を検討する。
-5. **最新のOpenAlexスナップショットを使うか、`journal`投入時と同じスナップショット（2026-10-14時点）を使うか**: 新しいスナップショットを使う場合、`journal/docs/SESSION_EC2.md`の実績件数（論文1,144万件等）とは一致しなくなる想定。本書は手順の再現性を優先し、スナップショットの選定自体は対象外とする。
+1. **本番規模での実行時間**: 2026-11-15 に S3 の最新2ファイル（約2万件）で全工程が通ることを確認済み（5DBとも検証OK、著者順も元データ200件と一致）。全量（`edges` は最大で1DB約3,300万行）での `export_sqlite.py` の所要時間は未計測（1,000万行の実測12.7秒からの単純換算で、edges だけなら合計数分程度の見込み）。
+2. **WAL・journalモード**: 生成ファイルはデフォルトのjournalモード（DELETE）。アプリは読み取り専用で開くため問題ない想定。
+3. **`VACUUM`の要否**: 主キー順で新規ファイルに投入するため断片化は小さい見込みで、現状は実行していない。配布サイズが6章の参考値より大きく乖離した場合に検討する。
+4. **出版年の誤り**: 4章の修正は未実施。
+5. **スナップショットの選定**: 2026-11-15 時点で S3 の最新スナップショットは同梱の `manifest.json` と同じ 2026-10-14（内容も一致を確認済み）。OpenAlex は週次で更新し、古いスナップショットのファイルは S3 から消えていく。そのため、manifest 記載のファイルが無くなった後は `FETCH_MANIFEST=1` で最新の manifest を取得して実行する（件数は6章の参考値と一致しなくなる。取得した manifest はコミットしておくと再現性が保てる）。
+
+---
+
+## 6. 参考: Cloudflare版での実績（2026-10-14 スナップショット、2026-11-11 実行）
+
+2 vCPU・7.6GB の EC2 で、stage 61.9分（1,898ファイル、失敗0、メモリ約4.5GBで安定）→ build 5分。作業領域は stage 2.4GB / out 2.1GB。重複id 0件、build の整合性チェックはすべて0。
+
+| DB | papers | edges | authorships | keywords | paper_keywords | D1サイズ（インデックス込み） |
+|---|---|---|---|---|---|---|
+| field17_2006_2010 | 1,932,850 | 3,072,398 | 4,426,213 | 443,391 | 10,565,552 | 1.64 GB |
+| field17_2011_2015 | 2,436,353 | 10,291,552 | 5,850,778 | 518,022 | 13,771,688 | 2.37 GB |
+| field17_2016_2020 | 2,693,374 | 19,159,162 | 7,319,358 | 575,258 | 16,011,926 | 3.19 GB |
+| field17_2021_2025 | 3,340,772 | 32,930,571 | 11,148,218 | 636,741 | 22,825,086 | 4.82 GB |
+| field17_2026_2030 | 1,034,662 | 4,405,995 | 3,206,170 | 411,488 | 7,093,028 | 1.26 GB |
+| **合計** | **11,438,011** | **69,859,678** | **31,950,737** | — | **70,267,280** | **13.28 GB** |
+
+- 同じスナップショットと同じ条件で実行すれば、件数はこの表と一致するはず（authorships の件数も、重複除去の方法が同値なので変わらない）。D1サイズは4章の移動分を含み、SQLiteファイルとは完全には一致しない。
+- edges のうち cited が別DBにあるものは 4,709万件（全体の約67%）。参考文献の総数1億4,683万件のうち、両端が取り込み範囲内のものが約48%。
