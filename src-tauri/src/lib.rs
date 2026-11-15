@@ -5,6 +5,8 @@ mod graph;
 #[cfg(test)]
 mod graph_tests;
 mod paper;
+#[cfg(test)]
+mod real_data_check;
 mod state;
 mod types;
 

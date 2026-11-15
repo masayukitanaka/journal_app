@@ -2,8 +2,12 @@
 //
 // D1時代はバインド変数上限100・ネットワークラウンドトリップ・レート制限を回避するために
 // チャンク分割（SQL_IN_CHUNK_SIZE=98）・並列バッチ（MAX_CONCURRENT_CHUNKS）・R2キャッシュを
-// 導入していたが、ローカルSQLiteではこれらの制約が無い（SQLiteの IN 句は999件まで一括可、
-// ファイルアクセスはマイクロ秒オーダー）ため、方針に従い素朴な実装にしている。
+// 導入していた。ネットワークラウンドトリップ・レート制限はローカルSQLiteには存在しないため
+// 並列バッチ・R2キャッシュは撤去したが、IN句のチャンク分割は実データで検証した結果、
+// 必要と判明した（2026-11-15）。rusqlite の bundled SQLite は SQLITE_LIMIT_VARIABLE_NUMBER の
+// 既定値が 999 で、被引用数の多い論文（実測: 子76,658件）をシードにすると
+// "too many SQL variables" で失敗する。D1 の 100 よりは大幅に緩いため、チャンクサイズは
+// 900（999 に対して安全マージンを残す）に拡大している。
 
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +16,9 @@ use crate::types::{GraphNode, SeedGraph};
 
 // SPEC.md 6.5「実データでは、描画ノード数を2,000件程度までに抑える」。
 const MAX_NODES: usize = 2000;
+
+// rusqlite(bundled) の SQLITE_LIMIT_VARIABLE_NUMBER 既定値（999）に対する安全マージン。
+const SQL_IN_CHUNK_SIZE: usize = 900;
 
 struct PaperLookupRow {
     id: i64,
@@ -30,13 +37,17 @@ fn fetch_edges(conn: &Connection, ids: &[i64], column: &str) -> rusqlite::Result
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT cited, citing FROM edges WHERE {column} IN ({placeholders})");
-    let mut stmt = conn.prepare(&sql)?;
-    let params = rusqlite::params_from_iter(ids.iter());
-    let rows = stmt
-        .query_map(params, |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(SQL_IN_CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT cited, citing FROM edges WHERE {column} IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(chunk.iter());
+        rows.extend(
+            stmt.query_map(params, |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
     Ok(rows)
 }
 
@@ -67,22 +78,27 @@ fn fetch_papers(conn: &Connection, ids: &[i64], min_cit: i64) -> rusqlite::Resul
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT id, year, title, cit, child_cnt FROM papers WHERE id IN ({placeholders}) AND cit >= ?");
-    let mut stmt = conn.prepare(&sql)?;
-    let mut params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-    params.push(&min_cit);
-    let rows = stmt
-        .query_map(params.as_slice(), |row| {
-            Ok(PaperLookupRow {
-                id: row.get(0)?,
-                year: row.get(1)?,
-                title: row.get(2)?,
-                cit: row.get(3)?,
-                child_cnt: row.get(4)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // min_cit 用に1枠残す（D1時代の SQL_IN_CHUNK_SIZE 設計と同じ考え方）。
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(SQL_IN_CHUNK_SIZE - 1) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, year, title, cit, child_cnt FROM papers WHERE id IN ({placeholders}) AND cit >= ?");
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        params.push(&min_cit);
+        rows.extend(
+            stmt.query_map(params.as_slice(), |row| {
+                Ok(PaperLookupRow {
+                    id: row.get(0)?,
+                    year: row.get(1)?,
+                    title: row.get(2)?,
+                    cit: row.get(3)?,
+                    child_cnt: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
     Ok(rows)
 }
 

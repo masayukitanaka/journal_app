@@ -14,17 +14,25 @@ pub fn fetch_paper_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Option<
     .or_else(|e| if e == rusqlite::Error::QueryReturnedNoRows { Ok(None) } else { Err(e) })
 }
 
+// rusqlite(bundled) の SQLITE_LIMIT_VARIABLE_NUMBER 既定値（999）に対する安全マージン
+// （graph.rs の SQL_IN_CHUNK_SIZE と同じ理由、2026-11-15）。拡張版ジャーナル論文等で
+// 参考文献が多い場合に備えてチャンク分割する。
+const SQL_IN_CHUNK_SIZE: usize = 900;
+
 fn fetch_papers_by_ids(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<PaperSummary>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT id, field, title, year, cit, fwci, subfield, child_cnt, doi FROM papers WHERE id IN ({placeholders})"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let params = rusqlite::params_from_iter(ids.iter());
-    let rows = stmt.query_map(params, row_to_paper_summary)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(SQL_IN_CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, field, title, year, cit, fwci, subfield, child_cnt, doi FROM papers WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(chunk.iter());
+        rows.extend(stmt.query_map(params, row_to_paper_summary)?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
     Ok(rows)
 }
 
