@@ -12,24 +12,48 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/db")
     }
 
-    fn open_main() -> Option<Connection> {
+    fn open_db(file_name: &str) -> Option<Connection> {
         let dir = db_dir();
-        let path = dir.join("field17_2021_2025.sqlite");
+        let path = dir.join(file_name);
         if !path.exists() {
             eprintln!("skip: {} not found (real data not downloaded)", path.display());
             return None;
         }
-        Some(db::open_readonly(&dir, "field17_2021_2025.sqlite").unwrap())
+        Some(db::open_readonly(&dir, file_name).unwrap())
+    }
+
+    fn open_main() -> Option<Connection> {
+        open_db("field17_2021_2025.sqlite")
     }
 
     #[test]
     fn fields_and_year_ranges_resolve() {
         let fields = db::list_fields();
-        assert_eq!(fields, vec![17]);
-        let ranges = db::list_year_ranges(17);
-        assert_eq!(ranges.len(), 5);
-        assert_eq!(ranges[0].format(), "2006-2010");
-        assert_eq!(ranges[4].format(), "2026-2030");
+        assert_eq!(fields, vec![17, 22]);
+        for field in [17, 22] {
+            let ranges = db::list_year_ranges(field);
+            assert_eq!(ranges.len(), 5);
+            assert_eq!(ranges[0].format(), "2006-2010");
+            assert_eq!(ranges[4].format(), "2026-2030");
+        }
+    }
+
+    #[test]
+    fn build_seed_graph_on_field22_real_top_paper() {
+        let Some(conn) = open_db("field22_2021_2025.sqlite") else { return };
+        let seed_id: i64 = conn
+            .query_row("SELECT id FROM papers WHERE field = 22 ORDER BY cit DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let adjacent_files = db::list_adjacent_db_files(22, db::YearRange { start: 2021, end: 2025 });
+        let dir = db_dir();
+        let adjacent: Vec<Connection> =
+            adjacent_files.iter().map(|f| db::open_readonly(&dir, f).unwrap()).collect();
+
+        let graph = build_seed_graph(&conn, &adjacent, seed_id, 1, 0).unwrap().expect("seed paper should exist");
+        assert_eq!(graph.seed, seed_id);
+        assert!(!graph.nodes.is_empty());
+        println!("field22 seed={} nodes={} edges={}", graph.seed, graph.nodes.len(), graph.edges.len());
     }
 
     #[test]

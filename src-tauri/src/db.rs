@@ -39,6 +39,12 @@ const DB_REGISTRY: &[DbRegistryEntry] = &[
     DbRegistryEntry { field: 17, year_range: YearRange { start: 2011, end: 2015 }, file_name: "field17_2011_2015.sqlite" },
     DbRegistryEntry { field: 17, year_range: YearRange { start: 2016, end: 2020 }, file_name: "field17_2016_2020.sqlite" },
     DbRegistryEntry { field: 17, year_range: YearRange { start: 2026, end: 2030 }, file_name: "field17_2026_2030.sqlite" },
+    // 分野22（Arts and Humanities、2026-11-15 追加）。
+    DbRegistryEntry { field: 22, year_range: YearRange { start: 2021, end: 2025 }, file_name: "field22_2021_2025.sqlite" },
+    DbRegistryEntry { field: 22, year_range: YearRange { start: 2006, end: 2010 }, file_name: "field22_2006_2010.sqlite" },
+    DbRegistryEntry { field: 22, year_range: YearRange { start: 2011, end: 2015 }, file_name: "field22_2011_2015.sqlite" },
+    DbRegistryEntry { field: 22, year_range: YearRange { start: 2016, end: 2020 }, file_name: "field22_2016_2020.sqlite" },
+    DbRegistryEntry { field: 22, year_range: YearRange { start: 2026, end: 2030 }, file_name: "field22_2026_2030.sqlite" },
 ];
 
 pub fn list_fields() -> Vec<i64> {

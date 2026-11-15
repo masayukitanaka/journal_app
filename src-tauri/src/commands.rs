@@ -17,6 +17,9 @@ fn field_display_name(field: i64) -> String {
     match field {
         17 => "Computer Science".to_string(),
         12 => "Arts and Humanities".to_string(),
+        // 2026-11-15 追加。被引用上位論文（NeRF, 3D Gaussian Splatting, SLAM, 集積回路等）の実データから
+        // 工学系と判断した（OpenAlexのField ID一覧での正式名称は未照合）。
+        22 => "Engineering".to_string(),
         other => format!("Field {other}"),
     }
 }
