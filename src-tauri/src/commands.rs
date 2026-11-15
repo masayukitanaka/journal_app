@@ -239,13 +239,13 @@ pub fn fetch_attribution() -> Vec<AttributionSource> {
             name: "OpenAlex".to_string(),
             url: "https://openalex.org".to_string(),
             license: "CC0".to_string(),
-            note: "論文・分野・被引用の基本データ".to_string(),
+            note: "Core data for papers, fields, and citation counts".to_string(),
         },
         AttributionSource {
             name: "Semantic Scholar".to_string(),
             url: "https://www.semanticscholar.org".to_string(),
-            license: "利用条件は個別確認".to_string(),
-            note: "引用意図・影響力のある引用の判定（補助データ、未連携）".to_string(),
+            license: "Terms vary, check individually".to_string(),
+            note: "Citation intent and influential-citation classification (supplementary, not yet integrated)".to_string(),
         },
     ]
 }
