@@ -127,10 +127,13 @@ fn fetch_papers_with_adjacent(
         let extra = fetch_papers(adjacent, &missing_ids, min_cit)?;
         for row in extra {
             if found_ids.insert(row.id) {
-                missing_ids.retain(|id| *id != row.id);
                 rows.push(PaperLookupRowWithSource { row, adjacent: true });
             }
         }
+        // missing_ids から見つかった分を一括で除く（2026-11-16、行ごとに retain すると
+        // missing_ids.len() * extra.len() のO(n^2)になり、新規ノードが数万件規模の
+        // 超高被引用論文のBFSでハングアップしていた）。
+        missing_ids.retain(|id| !found_ids.contains(id));
     }
     Ok(rows)
 }
